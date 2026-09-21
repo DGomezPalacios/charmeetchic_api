@@ -16,9 +16,16 @@ try {
     projectId: serviceAccount.project_id
   });
 
-  admin.auth().setCustomUserClaims('danigp.93@gmail.com', { ADMIN: true })
-    .then(() => {
-      console.log('✅ Custom claim ADMIN agregado!');
+  // setCustomUserClaims recibe el UID, no el email: primero se busca al usuario por email.
+  // La cuenta debe existir en Firebase (basta con haber iniciado sesión una vez con Google).
+  // Uso: node addAdmin.js [email]
+  const email = process.argv[2] || 'danigp.93@gmail.com';
+
+  admin.auth().getUserByEmail(email)
+    .then(user => admin.auth().setCustomUserClaims(user.uid, { ADMIN: true }).then(() => user))
+    .then(user => {
+      console.log(`✅ Custom claim ADMIN agregado a ${email} (uid: ${user.uid})`);
+      console.log('ℹ️  Cierra sesión y vuelve a entrar en el panel: el ID token actual dura 1 hora y no lo trae.');
       process.exit(0);
     })
     .catch(error => {
