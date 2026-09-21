@@ -43,7 +43,7 @@ import java.util.Set;
  *   <li>{@code sub} -> UID de Firebase (antes {@code oid} de Azure)</li>
  *   <li>{@code email}, {@code name} -> perfil (pueden faltar, p. ej. en usuarios anónimos)</li>
  *   <li>Roles: <b>custom claims</b> de Firebase asignados con el Admin SDK: {@code roles: ["ADMIN"]},
- *       {@code role: "ADMIN"} o {@code admin: true}. Sin roles reconocidos se asume USER.</li>
+ *       {@code role: "ADMIN"}, {@code admin: true} o {@code ADMIN: true}. Sin roles reconocidos se asume USER.</li>
  * </ul>
  *
  * <p>Los métodos {@code extract*} y {@code getTokenExpiration} tienen una versión que recibe los
@@ -54,6 +54,9 @@ import java.util.Set;
 public class JwtService {
 
     private static final int MIN_LOCAL_SECRET_BYTES = 32;
+
+    /** Custom claim booleano {@code {"ADMIN": true}}, el que asigna {@code addAdmin.js}. */
+    private static final String ADMIN_CLAIM = "ADMIN";
 
     private final JwtConfig config;
     private final JwksKeyProvider jwksKeyProvider;
@@ -174,9 +177,10 @@ public class JwtService {
     }
 
     /**
-     * Roles a partir de los <b>custom claims</b> de Firebase. Se admiten tres formas (las que suelen
+     * Roles a partir de los <b>custom claims</b> de Firebase. Se admiten cuatro formas (las que suelen
      * usarse al llamar a {@code setCustomUserClaims}):
-     * {@code {"roles": ["ADMIN"]}}, {@code {"role": "ADMIN"}} y {@code {"admin": true}}.
+     * {@code {"roles": ["ADMIN"]}}, {@code {"role": "ADMIN"}}, {@code {"admin": true}} y
+     * {@code {"ADMIN": true}}. En los booleanos solo vale {@code true}: {@code "true"} o {@code false} no dan rol.
      * Valores desconocidos se ignoran (sin distinguir mayúsculas). Todo usuario autenticado es al menos
      * USER, y un ADMIN también es USER.
      */
@@ -191,7 +195,7 @@ public class JwtService {
         if (claims.get("role") instanceof String single) {
             parseRole(single, roles);
         }
-        if (Boolean.TRUE.equals(claims.get("admin"))) {
+        if (Boolean.TRUE.equals(claims.get("admin")) || Boolean.TRUE.equals(claims.get(ADMIN_CLAIM))) {
             roles.add(Role.ADMIN);
         }
         roles.add(Role.USER);

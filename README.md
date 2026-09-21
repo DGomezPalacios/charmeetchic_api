@@ -244,6 +244,7 @@ administrador (el cliente no puede modificarlos). El backend acepta cualquiera d
 { "roles": ["ADMIN"] }      // recomendada
 { "role": "ADMIN" }
 { "admin": true }
+{ "ADMIN": true }           // el que asigna addAdmin.js (solo cuenta el booleano true)
 ```
 
 Sin claims (o con valores desconocidos) el usuario es `USER`. Para convertir a alguien en ADMIN usa el **Admin SDK**
@@ -265,6 +266,8 @@ admin.initializeApp({ credential: admin.credential.cert(require('./serviceAccoun
 node make-admin.js <UID>
 ```
 
+- El repo incluye `addAdmin.js` (`node addAdmin.js [email]`), que busca el UID por email y asigna `{ ADMIN: true }`;
+  la clave debe estar en `charme-et-chic-firebase-admin-key.json` (ignorada por git).
 - `serviceAccountKey.json` se descarga en *Project settings* → *Service accounts* → *Generate new private key*.
   **No lo subas a git** (el `.gitignore` ya lo excluye) ni lo pongas en el frontend.
 - Los claims se incorporan al token **la siguiente vez que se renueva**: el usuario debe cerrar sesión y volver a entrar, o
@@ -445,7 +448,7 @@ Esta API validaba antes tokens de Azure AD. Qué cambió:
 | `iss` | `https://login.microsoftonline.com/<tenant>/v2.0` (o `sts.windows.net`) | `https://securetoken.google.com/<project>` |
 | `aud` | `<client-id>` / `api://<client-id>` | `<project>` |
 | Id de usuario | claim `oid` | claim `sub` (UID de Firebase) |
-| Roles | *App roles* (claim `roles`) | *Custom claims* (`roles` / `role` / `admin`) |
+| Roles | *App roles* (claim `roles`) | *Custom claims* (`roles` / `role` / `admin` / `ADMIN`) |
 | Claves de firma | JWKS del tenant de Microsoft | JWKS de `securetoken@system.gserviceaccount.com` |
 
 Las entidades, repositorios, servicios de negocio, controladores y reglas de acceso no cambiaron. Los `userId` guardados

@@ -162,10 +162,19 @@ class JwtServiceTest {
                     .containsExactlyInAnyOrder(Role.ADMIN, Role.USER);
         }
 
+        /** El claim que asigna addAdmin.js: {@code setCustomUserClaims(uid, { ADMIN: true })}. */
+        @Test
+        void upperCaseAdminBooleanClaim_isSupported() {
+            assertThat(roles(localBuilder("uid-1", 3600).claim("ADMIN", true)))
+                    .containsExactlyInAnyOrder(Role.ADMIN, Role.USER);
+        }
+
         @Test
         void adminFalseOrWrongType_doesNotGrantAdmin() {
             assertThat(roles(localBuilder("uid-1", 3600).claim("admin", false))).containsExactly(Role.USER);
             assertThat(roles(localBuilder("uid-1", 3600).claim("admin", "true"))).containsExactly(Role.USER);
+            assertThat(roles(localBuilder("uid-1", 3600).claim("ADMIN", false))).containsExactly(Role.USER);
+            assertThat(roles(localBuilder("uid-1", 3600).claim("ADMIN", "true"))).containsExactly(Role.USER);
         }
 
         private java.util.Set<Role> roles(JwtBuilder builder) {
