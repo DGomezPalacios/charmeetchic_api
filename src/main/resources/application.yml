@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: charmeetchic-api
+  autoconfigure:
+    # No usamos usuarios en memoria: la identidad viene del JWT. Evita la
+    # "generated security password" en el log.
+    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    # Los DTOs se construyen dentro de @Transactional; no se necesita OSIV.
+    open-in-view: false
+    # Hibernate crea las tablas PRIMERO y luego se ejecuta data.sql (datos iniciales).
+    defer-datasource-initialization: true
+  datasource:
+    url: jdbc:h2:mem:testdb
+    driverClassName: org.h2.Driver
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: true
+  data:
+    web:
+      pageable:
+        max-page-size: 100
+        default-page-size: 10
+
+server:
+  port: 8080
+  servlet:
+    # Todas las rutas cuelgan de /api. Por eso los controladores se mapean a
+    # "/products", "/orders"... y la URL final es http://localhost:8080/api/products
+    context-path: /api
+
+logging:
+  level:
+    com.charmeetchic: DEBUG
+
+# ---------------------------------------------------------------------------
+# Configuración propia de la aplicación
+# ---------------------------------------------------------------------------
+app:
+  cors:
+    # Orígenes permitidos (separados por coma). Frontend Angular en desarrollo.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200}
+  order:
+    # IVA aplicado sobre el subtotal (0.19 = 19 %).
+    tax-rate: ${ORDER_TAX_RATE:0.19}
+  inventory:
+    # GET /products/low-stock devuelve los productos activos con stock menor a este valor.
+    low-stock-threshold: ${LOW_STOCK_THRESHOLD:5}
+  jwt:
+    # firebase -> valida ID tokens de Firebase Authentication (RS256, claves públicas de Google vía JWKS)
+    #             [DEFAULT / producción]
+    # local    -> valida tokens HS256 firmados con local-secret (SOLO desarrollo y tests)
+    mode: ${JWT_MODE:firebase}
+    local-secret: ${JWT_LOCAL_SECRET:}
+    clock-skew-seconds: 60
+    jwks-min-refresh-seconds: 300
+
+# ---------------------------------------------------------------------------
+# Firebase Authentication (reemplaza a Azure AD)
+# ---------------------------------------------------------------------------
+firebase:
+  # Project ID de tu proyecto de Firebase (Firebase Console -> Project settings -> General).
+  # Es la ÚNICA configuración necesaria: de él salen el issuer (https://securetoken.google.com/<id>)
+  # y la audience (<id>) que se exigen en los tokens. Se puede sobrescribir con FIREBASE_PROJECT_ID.
+  # No hace falta ninguna credencial: los tokens se verifican con las claves PÚBLICAS de Google.
+  project-id: ${FIREBASE_PROJECT_ID:charme-et-chic}

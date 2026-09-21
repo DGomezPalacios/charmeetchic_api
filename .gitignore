@@ -1,0 +1,79 @@
+# ---- Maven ----
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+dependency-reduced-pom.xml
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+
+# ---- Compilados / paquetes ----
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+
+# ---- IntelliJ IDEA ----
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+# ---- Eclipse / STS ----
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+
+# ---- VS Code ----
+.vscode/
+
+# ---- NetBeans ----
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# ---- Sistema operativo ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---- Secretos y configuración local (NUNCA versionar) ----
+.env
+.env.*
+!.env.example
+application-local.yml
+application-local.properties
+application-secret*.yml
+*.pem
+*.key
+
+# ---- Bases de datos locales (H2 en archivo) ----
+*.mv.db
+*.trace.db
+*.lock.db
+
+# ---- Claude Code (configuración local) ----
+.claude/settings.local.json
+
+# ---- Firebase: claves de cuenta de servicio del Admin SDK (NUNCA versionar) ----
+serviceAccount*.json
+serviceAccountKey*.json
+*-firebase-adminsdk-*.json
+.firebaserc
+
+# ---- Node (addAdmin.js) y clave de cuenta de servicio con otro nombre (NUNCA versionar) ----
+node_modules/
+*-admin-key.json
