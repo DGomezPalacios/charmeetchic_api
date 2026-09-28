@@ -97,7 +97,7 @@ Los reportes con periodo aceptan `from` y `to` (`yyyy-MM-dd`, ambos inclusive). 
 
 | Método | Ruta | Acceso | Descripción |
 |---|---|---|---|
-| GET | `/api/health` | Público | `{"status":"UP", ...}` |
+| GET | `/api/health` | Público | `{"status":"UP", "service":"...", "version":"0.0.1-SNAPSHOT", "timestamp":"..."}` |
 | GET | `/api/profile` | Autenticado | Datos y roles del usuario del token |
 
 ### Ejemplos
