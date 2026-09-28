@@ -5,6 +5,7 @@ import com.charmeetchic.api.entity.Category;
 import com.charmeetchic.api.entity.Product;
 import com.charmeetchic.api.exception.ConflictException;
 import com.charmeetchic.api.exception.ResourceNotFoundException;
+import com.charmeetchic.api.exception.ValidationException;
 import com.charmeetchic.api.repository.CategoryRepository;
 import com.charmeetchic.api.repository.ProductRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -15,6 +16,7 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -63,15 +65,30 @@ public class ProductService {
     }
 
     /**
-     * Búsqueda por texto (en nombre y descripción, sin distinguir mayúsculas) y/o categoría.
-     * Ambos filtros son opcionales.
+     * Búsqueda por texto (en nombre y descripción, sin distinguir mayúsculas), categoría y/o rango
+     * de precio. Todos los filtros son opcionales.
+     *
+     * @param minPrice precio mínimo (inclusive), opcional
+     * @param maxPrice precio máximo (inclusive), opcional
+     * @throws ValidationException si {@code minPrice} o {@code maxPrice} es negativo, o si se
+     *                              envían ambos límites y {@code minPrice > maxPrice}
      */
     @Transactional(readOnly = true)
-    public Page<ProductDTO> searchProducts(String keyword, Long categoryId, Pageable pageable) {
+    public Page<ProductDTO> searchProducts(String keyword, Long categoryId, BigDecimal minPrice,
+                                           BigDecimal maxPrice, Pageable pageable) {
+        if (minPrice != null && minPrice.signum() < 0) {
+            throw new ValidationException("'minPrice' no puede ser negativo");
+        }
+        if (maxPrice != null && maxPrice.signum() < 0) {
+            throw new ValidationException("'maxPrice' no puede ser negativo");
+        }
+        if (minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0) {
+            throw new ValidationException("'minPrice' no puede ser mayor que 'maxPrice'");
+        }
         String pattern = (keyword == null || keyword.isBlank())
                 ? "%"
                 : "%" + keyword.trim().toLowerCase(Locale.ROOT) + "%";
-        return productRepository.search(pattern, categoryId, pageable).map(ProductDTO::from);
+        return productRepository.search(pattern, categoryId, minPrice, maxPrice, pageable).map(ProductDTO::from);
     }
 
     @Transactional

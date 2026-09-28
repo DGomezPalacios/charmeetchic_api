@@ -56,7 +56,7 @@ Todas las rutas cuelgan de `/api` (context-path). Errores y paginación: ver sec
 | Método | Ruta | Acceso | Descripción |
 |---|---|---|---|
 | GET | `/api/products?page=0&size=10&sort=name,desc` | Público | Catálogo paginado (solo productos activos) |
-| GET | `/api/products/search?q=perla&category=1` | Público | Búsqueda por texto (nombre/descripción) y/o categoría |
+| GET | `/api/products/search?q=perla&category=1&minPrice=10000&maxPrice=20000` | Público | Búsqueda por texto (nombre/descripción), categoría y/o rango de precio (`minPrice`/`maxPrice`, ambos opcionales e inclusive); `400` si `minPrice > maxPrice` |
 | GET | `/api/products/{id}` | Público | Detalle de un producto activo |
 | GET | `/api/products/low-stock` | ADMIN | Productos activos con stock bajo el umbral (por defecto 5) |
 | POST | `/api/products` | ADMIN | Crear producto → `201` + cabecera `Location` |
