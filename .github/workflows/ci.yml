@@ -1,0 +1,75 @@
+# Nombre del workflow, visible en la pestaña "Actions" de GitHub
+name: "CI - charmeetchic-api"
+
+# Eventos que disparan el workflow:
+# - push a la rama develop (integración continua en la rama de desarrollo)
+# - pull_request hacia main o develop (validación antes de fusionar cambios)
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # Job único que compila el proyecto, corre los tests y valida que el
+  # artefacto generado levante correctamente (smoke test)
+  build-and-test:
+    # Máquina virtual donde se ejecuta el job
+    runs-on: ubuntu-latest
+
+    steps:
+      # Descarga el código del repositorio en el runner
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # Instala el JDK 17 (Temurin) y habilita el cache de dependencias Maven
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Compila el proyecto, corre los tests unitarios/integración y empaqueta el JAR
+      - name: Compilar y ejecutar tests (mvn verify)
+        run: mvn -B verify
+
+      # Smoke test: levanta el JAR generado en segundo plano y verifica que
+      # el endpoint de salud responda, reintentando por si la app tarda en iniciar
+      - name: Smoke test del JAR
+        run: |
+          java -jar target/charmeetchic-api-0.0.1-SNAPSHOT.jar &
+          APP_PID=$!
+
+          success=false
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://localhost:8080/api/health; then
+              echo "La aplicación respondió correctamente en el intento $i"
+              success=true
+              break
+            fi
+            echo "Intento $i: la aplicación aún no responde, reintentando en 2s..."
+            sleep 2
+          done
+
+          kill $APP_PID || true
+
+          if [ "$success" != "true" ]; then
+            echo "El smoke test falló: /api/health no respondió tras 30 intentos"
+            exit 1
+          fi
+
+      # Sube el reporte de tests (Surefire) como artefacto, incluso si el job falló
+      - name: Subir reportes de tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports/
+
+      # Sube el JAR generado como artefacto del workflow
+      - name: Subir JAR generado
+        uses: actions/upload-artifact@v4
+        with:
+          name: charmeetchic-api-jar
+          path: target/charmeetchic-api-0.0.1-SNAPSHOT.jar
