@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -84,6 +85,39 @@ class ApiIntegrationTest {
         mvc.perform(get("/products/search").param("category", "3").param("q", "anillo"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[*].categoryName", hasItem("Anillos")));
+    }
+
+    @Test
+    void products_searchByMinPrice_onlyReturnsProductsAtOrAboveIt() throws Exception {
+        mvc.perform(get("/products/search").param("minPrice", "25000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[*].sku", hasItem("PUL-CHA-003"))) // 29990.00
+                .andExpect(jsonPath("$.content[*].sku", not(hasItem("COL-PER-001")))); // 24990.00
+    }
+
+    @Test
+    void products_searchByMaxPrice_onlyReturnsProductsAtOrBelowIt() throws Exception {
+        mvc.perform(get("/products/search").param("maxPrice", "5000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[*].sku", hasItem("ACC-CIN-002"))) // 4990.00
+                .andExpect(jsonPath("$.content[*].sku", not(hasItem("ACC-PIN-001")))); // 6990.00
+    }
+
+    @Test
+    void products_searchByPriceRange_returnsOnlyProductsInsideIt() throws Exception {
+        mvc.perform(get("/products/search").param("minPrice", "15000").param("maxPrice", "17000"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[*].sku", hasItem("COL-LUN-002"))) // 15990.00
+                .andExpect(jsonPath("$.content[*].sku", hasItem("ARE-PER-002"))) // 16990.00
+                .andExpect(jsonPath("$.content[*].sku", not(hasItem("ACC-EST-003")))); // 14990.00, fuera del rango
+    }
+
+    @Test
+    void products_searchWithMinPriceGreaterThanMaxPrice_is400WithApiErrorBody() throws Exception {
+        mvc.perform(get("/products/search").param("minPrice", "20000").param("maxPrice", "10000"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status", is(400)))
+                .andExpect(jsonPath("$.path", is("/products/search")));
     }
 
     @Test

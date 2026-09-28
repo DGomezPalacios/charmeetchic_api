@@ -5,6 +5,7 @@ import com.charmeetchic.api.entity.Category;
 import com.charmeetchic.api.entity.Product;
 import com.charmeetchic.api.exception.ConflictException;
 import com.charmeetchic.api.exception.ResourceNotFoundException;
+import com.charmeetchic.api.exception.ValidationException;
 import com.charmeetchic.api.repository.CategoryRepository;
 import com.charmeetchic.api.repository.ProductRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -94,21 +95,71 @@ class ProductServiceTest {
     @Test
     void searchProducts_blankKeyword_matchesEverything() {
         Pageable pageable = PageRequest.of(0, 10);
-        when(productRepository.search("%", 2L, pageable)).thenReturn(Page.empty(pageable));
+        when(productRepository.search("%", 2L, null, null, pageable)).thenReturn(Page.empty(pageable));
 
-        assertThat(service.searchProducts("   ", 2L, pageable)).isEmpty();
+        assertThat(service.searchProducts("   ", 2L, null, null, pageable)).isEmpty();
 
-        verify(productRepository).search("%", 2L, pageable);
+        verify(productRepository).search("%", 2L, null, null, pageable);
     }
 
     @Test
     void searchProducts_keywordIsTrimmedAndLowercased() {
         Pageable pageable = PageRequest.of(0, 10);
-        when(productRepository.search("%perla%", null, pageable)).thenReturn(Page.empty(pageable));
+        when(productRepository.search("%perla%", null, null, null, pageable)).thenReturn(Page.empty(pageable));
 
-        service.searchProducts("  PeRLa ", null, pageable);
+        service.searchProducts("  PeRLa ", null, null, null, pageable);
 
-        verify(productRepository).search("%perla%", null, pageable);
+        verify(productRepository).search("%perla%", null, null, null, pageable);
+    }
+
+    // ------------------------------------------------------------------ filtro de precio
+
+    @Test
+    void searchProducts_onlyMinPrice_passesMinAndNullMax() {
+        Pageable pageable = PageRequest.of(0, 10);
+        BigDecimal minPrice = new BigDecimal("15000.00");
+        when(productRepository.search("%", null, minPrice, null, pageable)).thenReturn(Page.empty(pageable));
+
+        service.searchProducts(null, null, minPrice, null, pageable);
+
+        verify(productRepository).search("%", null, minPrice, null, pageable);
+    }
+
+    @Test
+    void searchProducts_onlyMaxPrice_passesNullMinAndMax() {
+        Pageable pageable = PageRequest.of(0, 10);
+        BigDecimal maxPrice = new BigDecimal("15000.00");
+        when(productRepository.search("%", null, null, maxPrice, pageable)).thenReturn(Page.empty(pageable));
+
+        service.searchProducts(null, null, null, maxPrice, pageable);
+
+        verify(productRepository).search("%", null, null, maxPrice, pageable);
+    }
+
+    @Test
+    void searchProducts_priceRange_passesBothBounds() {
+        Pageable pageable = PageRequest.of(0, 10);
+        BigDecimal minPrice = new BigDecimal("10000.00");
+        BigDecimal maxPrice = new BigDecimal("20000.00");
+        when(productRepository.search("%", null, minPrice, maxPrice, pageable)).thenReturn(Page.empty(pageable));
+
+        service.searchProducts(null, null, minPrice, maxPrice, pageable);
+
+        verify(productRepository).search("%", null, minPrice, maxPrice, pageable);
+    }
+
+    @Test
+    void searchProducts_minPriceGreaterThanMaxPrice_throwsValidationException() {
+        Pageable pageable = PageRequest.of(0, 10);
+        BigDecimal minPrice = new BigDecimal("20000.00");
+        BigDecimal maxPrice = new BigDecimal("10000.00");
+
+        assertThatThrownBy(() -> service.searchProducts(null, null, minPrice, maxPrice, pageable))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("minPrice")
+                .hasMessageContaining("maxPrice");
+
+        verify(productRepository, never()).search(any(), any(), any(), any(), any());
     }
 
     @Test
