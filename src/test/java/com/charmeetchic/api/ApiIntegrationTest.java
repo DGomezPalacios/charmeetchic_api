@@ -121,6 +121,14 @@ class ApiIntegrationTest {
     }
 
     @Test
+    void products_searchWithNegativeMinPrice_is400WithApiErrorBody() throws Exception {
+        mvc.perform(get("/products/search").param("minPrice", "-5000"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status", is(400)))
+                .andExpect(jsonPath("$.path", is("/products/search")));
+    }
+
+    @Test
     void products_getByIdIsPublic_andUnknownIdIs404WithApiErrorBody() throws Exception {
         mvc.perform(get("/products/1")).andExpect(status().isOk()).andExpect(jsonPath("$.id", is(1)));
 

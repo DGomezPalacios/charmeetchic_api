@@ -163,6 +163,30 @@ class ProductServiceTest {
     }
 
     @Test
+    void searchProducts_negativeMinPrice_throwsValidationException() {
+        Pageable pageable = PageRequest.of(0, 10);
+        BigDecimal minPrice = new BigDecimal("-5000.00");
+
+        assertThatThrownBy(() -> service.searchProducts(null, null, minPrice, null, pageable))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("minPrice");
+
+        verify(productRepository, never()).search(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void searchProducts_negativeMaxPrice_throwsValidationException() {
+        Pageable pageable = PageRequest.of(0, 10);
+        BigDecimal maxPrice = new BigDecimal("-1.00");
+
+        assertThatThrownBy(() -> service.searchProducts(null, null, null, maxPrice, pageable))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("maxPrice");
+
+        verify(productRepository, never()).search(any(), any(), any(), any(), any());
+    }
+
+    @Test
     void getLowStockProducts_usesConfiguredThreshold() {
         when(productRepository.findByActiveTrueAndStockLessThanOrderByStockAsc(LOW_STOCK_THRESHOLD))
                 .thenReturn(List.of(product(1L, "LOW-1", 2)));

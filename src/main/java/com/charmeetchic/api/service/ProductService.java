@@ -70,11 +70,18 @@ public class ProductService {
      *
      * @param minPrice precio mínimo (inclusive), opcional
      * @param maxPrice precio máximo (inclusive), opcional
-     * @throws ValidationException si se envían ambos límites y {@code minPrice > maxPrice}
+     * @throws ValidationException si {@code minPrice} o {@code maxPrice} es negativo, o si se
+     *                              envían ambos límites y {@code minPrice > maxPrice}
      */
     @Transactional(readOnly = true)
     public Page<ProductDTO> searchProducts(String keyword, Long categoryId, BigDecimal minPrice,
                                            BigDecimal maxPrice, Pageable pageable) {
+        if (minPrice != null && minPrice.signum() < 0) {
+            throw new ValidationException("'minPrice' no puede ser negativo");
+        }
+        if (maxPrice != null && maxPrice.signum() < 0) {
+            throw new ValidationException("'maxPrice' no puede ser negativo");
+        }
         if (minPrice != null && maxPrice != null && minPrice.compareTo(maxPrice) > 0) {
             throw new ValidationException("'minPrice' no puede ser mayor que 'maxPrice'");
         }
