@@ -42,6 +42,11 @@ logging:
 # Configuración propia de la aplicación
 # ---------------------------------------------------------------------------
 app:
+  # Versión de la API expuesta en GET /health. Se resuelve con el filtrado de
+  # recursos de Maven (delimitador @..@, habilitado por spring-boot-starter-parent
+  # para application*.yml): @project.version@ se reemplaza por <version> del pom.xml
+  # durante la fase process-resources, antes de compilar y de correr los tests.
+  version: '@project.version@'
   cors:
     # Orígenes permitidos (separados por coma). Frontend Angular en desarrollo.
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:4200}

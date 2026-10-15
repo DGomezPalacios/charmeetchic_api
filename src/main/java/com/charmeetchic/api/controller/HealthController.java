@@ -15,9 +15,12 @@ import java.util.Map;
 public class HealthController {
 
     private final String applicationName;
+    private final String version;
 
-    public HealthController(@Value("${spring.application.name}") String applicationName) {
+    public HealthController(@Value("${spring.application.name}") String applicationName,
+                             @Value("${app.version}") String version) {
         this.applicationName = applicationName;
+        this.version = version;
     }
 
     @GetMapping
@@ -25,6 +28,7 @@ public class HealthController {
         return ResponseEntity.ok(Map.of(
                 "status", "UP",
                 "service", applicationName,
+                "version", version,
                 "timestamp", Instant.now()));
     }
 }

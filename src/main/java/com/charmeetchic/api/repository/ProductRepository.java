@@ -38,10 +38,13 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
     boolean existsByCategoryId(Long categoryId);
 
     /**
-     * Búsqueda pública: solo productos activos, por texto (nombre o descripción) y/o categoría.
+     * Búsqueda pública: solo productos activos, por texto (nombre o descripción), categoría y/o
+     * rango de precio.
      *
      * @param pattern    patrón LIKE ya en minúsculas y con comodines (ej. {@code %perla%}); nunca null
      * @param categoryId filtro opcional (null = todas las categorías)
+     * @param minPrice   precio mínimo (inclusive), opcional (null = sin cota inferior)
+     * @param maxPrice   precio máximo (inclusive), opcional (null = sin cota superior)
      */
     @EntityGraph(attributePaths = "category")
     @Query("""
@@ -49,9 +52,13 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
             where p.active = true
               and (:categoryId is null or p.category.id = :categoryId)
               and (lower(p.name) like :pattern or lower(coalesce(p.description, '')) like :pattern)
+              and (:minPrice is null or p.price >= :minPrice)
+              and (:maxPrice is null or p.price <= :maxPrice)
             """)
     Page<Product> search(@Param("pattern") String pattern,
                          @Param("categoryId") Long categoryId,
+                         @Param("minPrice") BigDecimal minPrice,
+                         @Param("maxPrice") BigDecimal maxPrice,
                          Pageable pageable);
 
     /** Totales del inventario activo. Las sumas son null si no hay productos. */

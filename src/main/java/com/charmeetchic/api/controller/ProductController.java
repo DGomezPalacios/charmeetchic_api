@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import java.math.BigDecimal;
 import java.net.URI;
 import java.util.List;
 
@@ -43,13 +44,18 @@ public class ProductController {
         return ResponseEntity.ok(productService.getAllProducts(pageable));
     }
 
-    /** GET /api/products/search?q=perla&category=1 — público; ambos filtros son opcionales. */
+    /**
+     * GET /api/products/search?q=perla&category=1&minPrice=10000&maxPrice=20000 — público; todos
+     * los filtros son opcionales. Si {@code minPrice > maxPrice}, responde 400.
+     */
     @GetMapping("/search")
     public ResponseEntity<Page<ProductDTO>> searchProducts(
             @RequestParam(name = "q", required = false) String keyword,
             @RequestParam(name = "category", required = false) Long categoryId,
+            @RequestParam(name = "minPrice", required = false) BigDecimal minPrice,
+            @RequestParam(name = "maxPrice", required = false) BigDecimal maxPrice,
             @PageableDefault(size = 10, sort = "name") Pageable pageable) {
-        return ResponseEntity.ok(productService.searchProducts(keyword, categoryId, pageable));
+        return ResponseEntity.ok(productService.searchProducts(keyword, categoryId, minPrice, maxPrice, pageable));
     }
 
     /** GET /api/products/low-stock — ADMIN. Productos activos bajo el umbral de stock. */
