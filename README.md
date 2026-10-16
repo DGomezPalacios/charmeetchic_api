@@ -92,6 +92,9 @@ Los reportes con periodo aceptan `from` y `to` (`yyyy-MM-dd`, ambos inclusive). 
 | GET | `/api/reports/sales-by-category?from=&to=` | Unidades e ingresos por categoría |
 | GET | `/api/reports/inventory-value` | Valor del inventario a costo y a precio de venta, utilidad potencial |
 | GET | `/api/reports/top-products?from=&to=&limit=10` | Productos más vendidos (`limit` 1–50) |
+| POST | `/api/reports/inventory/async` | Pide un reporte de inventario en segundo plano (RabbitMQ). Responde **202** con el `id` y `Location` |
+| GET | `/api/reports/async/{id}` | Estado del reporte: `PENDIENTE`, `COMPLETADO` (con `result`) o `FALLIDO` (con `error`) |
+| GET | `/api/reports/stock-movements?productId=&page=&size=` | Auditoría de movimientos de stock (la escribe el consumidor de RabbitMQ) |
 
 ### Otros
 
@@ -318,7 +321,10 @@ este fin porque emite tokens sin firmar, que la API rechaza por diseño.
 | `RABBITMQ_ADDRESSES` | `localhost:5672` | Nodos de RabbitMQ, separados por coma (`host1:5672,host2:5672` en clúster) |
 | `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` | `guest` / `guest` | Credenciales de RabbitMQ (los valores por defecto son solo para desarrollo local) |
 | `RABBITMQ_VHOST` | `/` | Virtual host de RabbitMQ |
-| `RABBITMQ_CHECK_ON_STARTUP` | `true` | Conectarse al arrancar para declarar colas/exchanges (si falla, solo hay un WARN) |
+| `MESSAGING_ENABLED` | `true` | `false` = no publicar, no conectarse al arrancar y no iniciar consumidores |
+| `RABBITMQ_RETRY_MAX_ATTEMPTS` | `3` | Intentos totales ante un error transitorio antes de mandar el mensaje a la DLQ (1–10) |
+| `RABBITMQ_RETRY_BACKOFF_MS` | `1000` | Espera antes de cada reintento (se multiplica por el nº de intento) |
+| `MESSAGING_SIMULATED_FAILURES` | `true` | Permite `simularError` en `POST /api/reports/inventory/async` (demo). Apagar en producción |
 
 El resto de la configuración está en `src/main/resources/application.yml`.
 
@@ -344,6 +350,65 @@ mvn spring-boot:run             # al arrancar, el log dice "Conectado a RabbitMQ
 
 La API **no depende** de que RabbitMQ esté arriba para arrancar, y `mvn verify` no lo necesita
 (`src/test/resources/config/application.yml` desactiva la conexión en los tests).
+
+### Qué publica cada operación
+
+| Operación | Cola | Cuándo |
+|---|---|---|
+| Crear orden / cancelar orden / editar stock / crear producto | `inventario.movimientos` | Siempre que cambia el stock |
+| Las mismas | `inventario.stock-bajo` | Solo si el stock **cruza** el umbral (antes ≥ 5, después < 5) |
+| `POST /api/reports/inventory/async` | `notificaciones.reportes` | Una vez por solicitud |
+
+Los mensajes se publican **después del commit**: si la orden falla (p. ej. 409 por stock insuficiente), no
+sale ningún mensaje y la auditoría no registra movimientos falsos.
+
+### ACK manual, reintentos y DLQ
+
+Todos los consumidores (`messaging/consumer/inventario`, `messaging/consumer/notificaciones`) usan
+`ManualAckProcessor`:
+
+| Situación | Decisión | Log |
+|---|---|---|
+| Procesado sin error | `basicAck` | `intento 1/3 -> ACK (procesado)` |
+| JSON ilegible, no pasa Bean Validation o el registro no existe | `basicNack(requeue=false)` → DLQ, **sin reintentar** | `NACK a DLQ (mensaje inválido, no se reintenta)` |
+| Error transitorio (BD caída, timeout...) e intento < 3 | Espera, republica una copia con `x-retry-count + 1` y hace ACK del original | `falló por error transitorio` + `republicado como intento 2/3` |
+| Error transitorio en el intento 3 | `basicNack(requeue=false)` → DLQ | `NACK a DLQ (reintentos agotados)` |
+
+Nunca se usa `basicNack(requeue=true)`: reencola sin contador y genera un loop infinito.
+
+### Demo: provocar reintentos y DLQ
+
+Requiere un token ADMIN. Para probar sin Firebase, levanta la API en modo local (ver
+[Probar sin Firebase](#probar-sin-firebase-modo-local)) y usa un token HS256 con `"roles":["ADMIN","USER"]`.
+
+```bash
+API=http://localhost:8080/api; AUTH="Authorization: Bearer $TOKEN"
+
+# 1) Reporte normal -> COMPLETADO
+curl -i -H "$AUTH" -X POST $API/reports/inventory/async
+
+# 2) Falla una vez y el reintento lo procesa -> COMPLETADO (log: intento 1/3 falló... intento 2/3 -> ACK)
+curl -H "$AUTH" -H "Content-Type: application/json" -X POST $API/reports/inventory/async -d '{"simularError":"TRANSITORIO_UNA_VEZ"}'
+
+# 3) Falla siempre -> 3 intentos -> DLQ -> FALLIDO
+curl -H "$AUTH" -H "Content-Type: application/json" -X POST $API/reports/inventory/async -d '{"simularError":"TRANSITORIO"}'
+
+# 4) Mensaje inválido -> DLQ directo, sin reintentos -> FALLIDO
+curl -H "$AUTH" -H "Content-Type: application/json" -X POST $API/reports/inventory/async -d '{"simularError":"INVALIDO"}'
+
+# Estado de cualquiera de ellos (el id viene en la respuesta y en el header Location)
+curl -H "$AUTH" $API/reports/async/<id>
+```
+
+Luego, en la consola (http://localhost:15672 → Queues), `notificaciones.reportes.dlq` tiene los mensajes
+fallidos. En "Get messages" se ven el header `x-death` (motivo `rejected`) y `x-retry-count`.
+
+**Mensaje basura en una cola real:** en la consola, Exchanges → `charmeetchic.inventario` → Publish message,
+routing key `inventario.movimientos`, payload `esto no es json`. El log muestra
+`NACK a DLQ (mensaje inválido...)` y el mensaje aparece en `inventario.movimientos.dlq`.
+
+**Alerta de stock bajo:** compra 4 unidades del "Estuche Joyero Viaje" (`ACC-EST-003`, stock 8). El log
+muestra `ALERTA STOCK BAJO`. Una segunda compra del mismo producto solo genera el movimiento, sin otra alerta.
 
 ---
 
