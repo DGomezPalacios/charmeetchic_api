@@ -1,0 +1,11 @@
+# -----------------------------------------------------------------------------
+# Ajustes SOLO para tests. Spring Boot lee classpath:/config/application.yml DESPUÉS de
+# classpath:/application.yml, así que estas claves pisan a las de src/main/resources.
+# No se empaqueta en el JAR (está en src/test).
+#
+# Objetivo: que `mvn verify` pase sin un RabbitMQ levantado (CI de GitHub incluido).
+# -----------------------------------------------------------------------------
+app:
+  messaging:
+    # No intentar conectarse a RabbitMQ al arrancar el contexto de Spring en los tests.
+    check-on-startup: false

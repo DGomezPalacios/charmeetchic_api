@@ -26,6 +26,16 @@ spring:
       pageable:
         max-page-size: 100
         default-page-size: 10
+  # Conexión a RabbitMQ. Spring Boot la usa para crear la ConnectionFactory, el RabbitTemplate y el
+  # RabbitAdmin. 'addresses' acepta una lista "host1:5672,host2:5672": así la misma propiedad sirve
+  # para el nodo único local y para el clúster de 2 nodos (si un nodo cae, se conecta al otro).
+  # Los valores por defecto son SOLO para desarrollo local (docker-compose.yml); en la nube se
+  # entregan por variables de entorno y nunca se versionan.
+  rabbitmq:
+    addresses: ${RABBITMQ_ADDRESSES:localhost:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    virtual-host: ${RABBITMQ_VHOST:/}
 
 server:
   port: 8080
@@ -56,6 +66,43 @@ app:
   inventory:
     # GET /products/low-stock devuelve los productos activos con stock menor a este valor.
     low-stock-threshold: ${LOW_STOCK_THRESHOLD:5}
+  # -------------------------------------------------------------------------
+  # Mensajería (RabbitMQ): ÚNICO lugar donde se definen los nombres de exchanges, colas y routing
+  # keys. RabbitMQConfig (paquete messaging.config) los lee vía MessagingProperties y declara los
+  # beans; ninguna otra clase escribe estos nombres "a mano".
+  #
+  #   Exchange                      Tipo    Routing key / patrón        Cola
+  #   charmeetchic.inventario       direct  inventario.stock-bajo   ->  inventario.stock-bajo
+  #   charmeetchic.inventario       direct  inventario.movimientos  ->  inventario.movimientos
+  #   charmeetchic.notificaciones   topic   notificacion.reporte.*  ->  notificaciones.reportes
+  #   charmeetchic.dlx              direct  <nombre de la DLQ>      ->  <cola>.dlq  (mensajes fallidos)
+  # -------------------------------------------------------------------------
+  messaging:
+    # Al arrancar, abrir una conexión de prueba para que RabbitAdmin declare la topología
+    # (RabbitStartupCheck). Si RabbitMQ no está, solo se registra un WARN. Los tests lo apagan.
+    check-on-startup: ${RABBITMQ_CHECK_ON_STARTUP:true}
+    exchanges:
+      # direct: entrega a la cola cuya binding key es IGUAL a la routing key del mensaje.
+      inventario: charmeetchic.inventario
+      # topic: entrega según patrones con comodines (* = una palabra, # = cero o más palabras).
+      notificaciones: charmeetchic.notificaciones
+      # Dead Letter Exchange: recibe los mensajes rechazados (NACK sin reencolar) de las 3 colas.
+      dead-letter: charmeetchic.dlx
+    queues:
+      stock-bajo:
+        name: inventario.stock-bajo
+        routing-key: inventario.stock-bajo
+        dead-letter-queue: inventario.stock-bajo.dlq
+      movimientos:
+        name: inventario.movimientos
+        routing-key: inventario.movimientos
+        dead-letter-queue: inventario.movimientos.dlq
+      reportes:
+        name: notificaciones.reportes
+        # En un exchange topic la binding key es un PATRÓN. El productor publica con una routing
+        # key concreta que calce con él, p. ej. notificacion.reporte.inventario.
+        routing-key: notificacion.reporte.*
+        dead-letter-queue: notificaciones.reportes.dlq
   jwt:
     # firebase -> valida ID tokens de Firebase Authentication (RS256, claves públicas de Google vía JWKS)
     #             [DEFAULT / producción]
