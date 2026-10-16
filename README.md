@@ -315,8 +315,35 @@ este fin porque emite tokens sin firmar, que la API rechaza por diseño.
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:4200` | Orígenes permitidos, separados por coma |
 | `ORDER_TAX_RATE` | `0.19` | Tasa de IVA aplicada al subtotal de las órdenes |
 | `LOW_STOCK_THRESHOLD` | `5` | Umbral de `GET /api/products/low-stock` (stock **menor** a este valor) |
+| `RABBITMQ_ADDRESSES` | `localhost:5672` | Nodos de RabbitMQ, separados por coma (`host1:5672,host2:5672` en clúster) |
+| `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` | `guest` / `guest` | Credenciales de RabbitMQ (los valores por defecto son solo para desarrollo local) |
+| `RABBITMQ_VHOST` | `/` | Virtual host de RabbitMQ |
+| `RABBITMQ_CHECK_ON_STARTUP` | `true` | Conectarse al arrancar para declarar colas/exchanges (si falla, solo hay un WARN) |
 
 El resto de la configuración está en `src/main/resources/application.yml`.
+
+---
+
+## Mensajería (RabbitMQ)
+
+Los nombres de exchanges, colas y routing keys están **solo** en `application.yml` (`app.messaging`) y se
+declaran como beans en `messaging/config/RabbitMQConfig.java`. La API crea la topología sola al conectarse.
+
+| Cola | Exchange (tipo) | Routing key | DLQ |
+|---|---|---|---|
+| `inventario.stock-bajo` | `charmeetchic.inventario` (direct) | `inventario.stock-bajo` | `inventario.stock-bajo.dlq` |
+| `inventario.movimientos` | `charmeetchic.inventario` (direct) | `inventario.movimientos` | `inventario.movimientos.dlq` |
+| `notificaciones.reportes` | `charmeetchic.notificaciones` (topic) | `notificacion.reporte.*` | `notificaciones.reportes.dlq` |
+
+Los mensajes rechazados (NACK sin reencolar) van al DLX `charmeetchic.dlx`, que los deja en la DLQ de su cola.
+
+```bash
+docker compose up -d            # RabbitMQ local (1 nodo) + consola en http://localhost:15672 (guest/guest)
+mvn spring-boot:run             # al arrancar, el log dice "Conectado a RabbitMQ ... topología declarada"
+```
+
+La API **no depende** de que RabbitMQ esté arriba para arrancar, y `mvn verify` no lo necesita
+(`src/test/resources/config/application.yml` desactiva la conexión en los tests).
 
 ---
 
