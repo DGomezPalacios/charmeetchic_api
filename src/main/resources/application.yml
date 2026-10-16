@@ -36,6 +36,16 @@ spring:
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
     virtual-host: ${RABBITMQ_VHOST:/}
+    listener:
+      simple:
+        # ACK MANUAL: el consumidor decide explícitamente basicAck / basicNack. Spring no confirma solo.
+        acknowledge-mode: manual
+        # Máximo de mensajes entregados y aún sin confirmar por consumidor (control de flujo).
+        prefetch: 10
+        # Red de seguridad: si una excepción escapara del consumidor, NO reencolar (evita loops).
+        default-requeue-rejected: false
+        # Arrancar los @RabbitListener junto con la app (los tests lo apagan).
+        auto-startup: ${MESSAGING_ENABLED:true}
 
 server:
   port: 8080
@@ -78,9 +88,18 @@ app:
   #   charmeetchic.dlx              direct  <nombre de la DLQ>      ->  <cola>.dlq  (mensajes fallidos)
   # -------------------------------------------------------------------------
   messaging:
-    # Al arrancar, abrir una conexión de prueba para que RabbitAdmin declare la topología
-    # (RabbitStartupCheck). Si RabbitMQ no está, solo se registra un WARN. Los tests lo apagan.
-    check-on-startup: ${RABBITMQ_CHECK_ON_STARTUP:true}
+    # Interruptor general. false = no se publican mensajes ni se intenta conectar al arrancar
+    # (RabbitStartupCheck). Lo usan los tests para correr sin RabbitMQ.
+    enabled: ${MESSAGING_ENABLED:true}
+    retry:
+      # Intentos TOTALES de procesar un mensaje con error transitorio (1 original + 2 reintentos).
+      # Al agotarlos: basicNack(requeue=false) -> DLX -> DLQ.
+      max-attempts: ${RABBITMQ_RETRY_MAX_ATTEMPTS:3}
+      # Espera antes de cada reintento = backoff-ms * número de intento (1 s, 2 s, ...).
+      backoff-ms: ${RABBITMQ_RETRY_BACKOFF_MS:1000}
+    demo:
+      # Permite que POST /reports/inventory/async reciba "simularError" para mostrar reintentos y DLQ.
+      simulated-failures-enabled: ${MESSAGING_SIMULATED_FAILURES:true}
     exchanges:
       # direct: entrega a la cola cuya binding key es IGUAL a la routing key del mensaje.
       inventario: charmeetchic.inventario
@@ -102,6 +121,9 @@ app:
         # En un exchange topic la binding key es un PATRÓN. El productor publica con una routing
         # key concreta que calce con él, p. ej. notificacion.reporte.inventario.
         routing-key: notificacion.reporte.*
+        # Routing key concreta con que el productor publica (debe calzar con el patrón de arriba).
+        # En las colas direct no hace falta: se publica con la misma routing-key.
+        publish-routing-key: notificacion.reporte.inventario
         dead-letter-queue: notificaciones.reportes.dlq
   jwt:
     # firebase -> valida ID tokens de Firebase Authentication (RS256, claves públicas de Google vía JWKS)

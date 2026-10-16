@@ -18,11 +18,11 @@ import org.springframework.stereotype.Component;
  * <p>Si RabbitMQ no responde, solo se deja un WARN: la API REST sigue funcionando (el inventario no debe
  * caerse porque la mensajería esté abajo) y Spring AMQP reintenta la conexión en el siguiente uso.
  *
- * <p>Se desactiva con {@code app.messaging.check-on-startup=false} (lo hacen los tests).
+ * <p>Se desactiva con {@code app.messaging.enabled=false} (lo hacen los tests).
  */
 @Slf4j
 @Component
-@ConditionalOnProperty(prefix = "app.messaging", name = "check-on-startup", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "app.messaging", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class RabbitStartupCheck implements ApplicationRunner {
 
     private final ConnectionFactory connectionFactory;

@@ -5,7 +5,18 @@
 #
 # Objetivo: que `mvn verify` pase sin un RabbitMQ levantado (CI de GitHub incluido).
 # -----------------------------------------------------------------------------
+spring:
+  rabbitmq:
+    listener:
+      simple:
+        # Los @RabbitListener existen como beans, pero no se conectan al broker.
+        auto-startup: false
+
 app:
   messaging:
-    # No intentar conectarse a RabbitMQ al arrancar el contexto de Spring en los tests.
-    check-on-startup: false
+    # Sin publicación ni conexión de prueba al arrancar. Los tests de mensajería que lo
+    # necesitan lo vuelven a encender con @TestPropertySource y un RabbitTemplate simulado.
+    enabled: false
+    retry:
+      # Sin esperas entre reintentos para que los tests sean rápidos.
+      backoff-ms: 0

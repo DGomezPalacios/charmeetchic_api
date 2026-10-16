@@ -72,20 +72,19 @@ public class RabbitMQConfig {
     // =====================================================================================
 
     /**
-     * Serializa los mensajes como JSON (en vez de serialización Java binaria).
+     * Serializa los mensajes que PUBLICAMOS como JSON (en vez de serialización Java binaria).
      *
      * <ul>
      *   <li>Se lee en la consola de RabbitMQ: útil para la demo y para depurar.</li>
      *   <li>Usa el mismo {@link ObjectMapper} de Spring que los endpoints REST (fechas ISO-8601, etc.).</li>
-     *   <li>Al deserializar solo se confía en clases del paquete {@code messaging}: un mensaje no puede
-     *       pedir que se instancie una clase arbitraria del classpath.</li>
+     *   <li>Si alguna vez se usara para leer, solo confía en las clases del paquete {@code messaging.event}.</li>
      * </ul>
      *
-     * <p>Spring Boot detecta este bean y lo inyecta solo en el {@code RabbitTemplate} y en los listeners.
+     * <p>Spring Boot detecta este bean y lo inyecta en el {@code RabbitTemplate}.
      */
     @Bean
     public MessageConverter jsonMessageConverter(ObjectMapper objectMapper) {
-        return new Jackson2JsonMessageConverter(objectMapper, "com.charmeetchic.api.messaging");
+        return new Jackson2JsonMessageConverter(objectMapper, "com.charmeetchic.api.messaging.event");
     }
 
     // =====================================================================================
