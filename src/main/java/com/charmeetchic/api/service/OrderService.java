@@ -5,6 +5,7 @@ import com.charmeetchic.api.dto.OrderDTO;
 import com.charmeetchic.api.entity.Order;
 import com.charmeetchic.api.entity.OrderItem;
 import com.charmeetchic.api.entity.Product;
+import com.charmeetchic.api.enums.MovementType;
 import com.charmeetchic.api.enums.OrderStatus;
 import com.charmeetchic.api.exception.ConflictException;
 import com.charmeetchic.api.exception.InsufficientStockException;
@@ -22,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +40,8 @@ import java.util.Map;
  *   <li>El estado solo avanza de a un paso: PENDING -> PROCESSING -> SENT -> DELIVERED.</li>
  *   <li>El cliente solo ve y cancela SUS órdenes (un ADMIN puede ver/cancelar cualquiera). Cancelar
  *       solo es posible en PENDING y devuelve el stock.</li>
+ *   <li>Cada cambio de stock se informa a {@link StockEventService} (auditoría y alerta de stock bajo). Los
+ *       mensajes salen solo si la transacción se confirma: una orden que falla no deja movimientos falsos.</li>
  * </ul>
  */
 @Slf4j
@@ -48,13 +52,16 @@ public class OrderService {
 
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
+    private final StockEventService stockEventService;
     private final BigDecimal taxRate;
 
     public OrderService(OrderRepository orderRepository,
                         ProductRepository productRepository,
+                        StockEventService stockEventService,
                         @Value("${app.order.tax-rate:0.19}") BigDecimal taxRate) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
+        this.stockEventService = stockEventService;
         this.taxRate = taxRate;
     }
 
@@ -81,6 +88,7 @@ public class OrderService {
                 .build();
 
         BigDecimal subtotal = BigDecimal.ZERO;
+        List<StockChange> stockChanges = new ArrayList<>();
         for (Map.Entry<Long, Integer> line : quantities.entrySet()) {
             int quantity = line.getValue();
             Product product = productRepository.findById(line.getKey())
@@ -90,6 +98,7 @@ public class OrderService {
             if (product.getStock() < quantity) {
                 throw new InsufficientStockException(product.getName(), product.getStock(), quantity);
             }
+            stockChanges.add(new StockChange(product, product.getStock()));
             product.setStock(product.getStock() - quantity);
 
             BigDecimal lineSubtotal = money(product.getPrice().multiply(BigDecimal.valueOf(quantity)));
@@ -108,6 +117,9 @@ public class OrderService {
         order.setTotal(subtotal.add(tax));
 
         Order saved = orderRepository.save(order);
+        // Con el id de la orden ya asignado: un movimiento de auditoría por producto (y alerta si cruza el umbral).
+        stockChanges.forEach(c -> stockEventService.stockChanged(c.product(), c.previousStock(),
+                MovementType.VENTA, "orden #" + saved.getId()));
         log.info("Orden creada: id={}, userId={}, líneas={}, total={}", saved.getId(), userId,
                 saved.getItems().size(), saved.getTotal());
         return OrderDTO.from(saved);
@@ -153,7 +165,10 @@ public class OrderService {
         }
         order.getItems().forEach(item -> {
             Product product = item.getProduct();
-            product.setStock(product.getStock() + item.getQuantity());
+            int previousStock = product.getStock();
+            product.setStock(previousStock + item.getQuantity());
+            stockEventService.stockChanged(product, previousStock, MovementType.CANCELACION_ORDEN,
+                    "cancelación orden #" + id);
         });
         orderRepository.delete(order);
         log.info("Orden {} cancelada por {}; stock devuelto", id, requesterId);
@@ -175,6 +190,10 @@ public class OrderService {
             throw new AccessDeniedException("La orden pertenece a otro usuario");
         }
         return order;
+    }
+
+    /** Stock que tenía un producto antes de descontarlo en la orden. */
+    private record StockChange(Product product, int previousStock) {
     }
 
     private static BigDecimal money(BigDecimal value) {

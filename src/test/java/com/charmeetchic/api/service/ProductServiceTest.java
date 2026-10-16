@@ -40,13 +40,15 @@ class ProductServiceTest {
     private ProductRepository productRepository;
     @Mock
     private CategoryRepository categoryRepository;
+    @Mock
+    private StockEventService stockEventService;
 
     private ProductService service;
     private Category category;
 
     @BeforeEach
     void setUp() {
-        service = new ProductService(productRepository, categoryRepository, LOW_STOCK_THRESHOLD);
+        service = new ProductService(productRepository, categoryRepository, stockEventService, LOW_STOCK_THRESHOLD);
         category = Category.builder().id(1L).name("Collares").build();
     }
 
