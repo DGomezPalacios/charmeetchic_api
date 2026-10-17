@@ -54,6 +54,13 @@
             <artifactId>spring-boot-starter-amqp</artifactId>
         </dependency>
 
+        <!-- PostgreSQL: base de datos del perfil prod (contenedor postgres en la VM) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Base de datos en memoria para desarrollo -->
         <dependency>
             <groupId>com.h2database</groupId>
