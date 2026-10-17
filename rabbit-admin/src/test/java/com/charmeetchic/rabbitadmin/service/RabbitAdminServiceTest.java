@@ -43,8 +43,9 @@ class RabbitAdminServiceTest {
     private final RabbitManagementClient management = mock(RabbitManagementClient.class);
     private final RabbitAdminService service = new RabbitAdminService(amqpAdmin, management, new AppProperties(
             new AppProperties.Rabbitmq("http://localhost:15672"),
-            new AppProperties.Admin(List.of("charmeetchic.", "inventario.", "notificaciones.")),
-            new AppProperties.Security("charme-et-chic", "http://jwks")));
+            new AppProperties.Admin(List.of("charmeetchic.", "inventario.", "notificaciones.", "ventas.")),
+            new AppProperties.Security("charme-et-chic", "http://jwks"),
+                new AppProperties.Alerts(false, 30_000, 80, ".dlq")));
 
     // ------------------------------------------------------------------ colas
 

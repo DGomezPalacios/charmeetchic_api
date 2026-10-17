@@ -58,7 +58,26 @@ public class RabbitManagementClient {
                                  @JsonProperty("routing_key") String routingKey) {
     }
 
+    /**
+     * Estado de un nodo del clúster. {@code memAlarm}/{@code diskFreeAlarm} = true cuando RabbitMQ superó su
+     * límite de memoria (vm_memory_high_watermark) o bajó del mínimo de disco: en ese estado BLOQUEA a los
+     * productores. Son las mismas alarmas que la consola muestra en rojo en Overview → Nodes.
+     */
+    public record NodeDetails(String name, boolean running,
+                              @JsonProperty("mem_alarm") boolean memAlarm,
+                              @JsonProperty("disk_free_alarm") boolean diskFreeAlarm,
+                              @JsonProperty("mem_used") Long memUsed,
+                              @JsonProperty("mem_limit") Long memLimit,
+                              @JsonProperty("disk_free") Long diskFree,
+                              @JsonProperty("disk_free_limit") Long diskFreeLimit) {
+    }
+
     // ------------------------------------------------------------------ consultas
+
+    /** Nodos del clúster (incluye los caídos, con running=false). */
+    public List<NodeDetails> listNodes() {
+        return get("/api/nodes", new ParameterizedTypeReference<>() {});
+    }
 
     public List<QueueDetails> listQueues() {
         return get("/api/queues/{vhost}", new ParameterizedTypeReference<>() {}, vhost);

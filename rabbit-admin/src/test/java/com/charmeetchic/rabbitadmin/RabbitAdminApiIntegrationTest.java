@@ -10,6 +10,8 @@ import com.charmeetchic.rabbitadmin.exception.AdminExceptions.ConflictException;
 import com.charmeetchic.rabbitadmin.exception.AdminExceptions.NotFoundException;
 import com.charmeetchic.rabbitadmin.exception.AdminExceptions.ProtectedResourceException;
 import com.charmeetchic.rabbitadmin.security.FirebaseTokenValidators;
+import com.charmeetchic.rabbitadmin.dto.AlertInfo;
+import com.charmeetchic.rabbitadmin.service.AlertService;
 import com.charmeetchic.rabbitadmin.service.RabbitAdminService;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -62,7 +64,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * validan con las MISMAS reglas que en producción ({@link FirebaseTokenValidators}); solo cambia de dónde
  * sale la clave pública (aquí, en memoria; en producción, el JWKS de Google).
  */
-@SpringBootTest
+@SpringBootTest(properties = "app.alerts.enabled=false")
 @AutoConfigureMockMvc
 class RabbitAdminApiIntegrationTest {
 
@@ -86,6 +88,9 @@ class RabbitAdminApiIntegrationTest {
 
     @MockBean
     private RabbitAdminService service;
+
+    @MockBean
+    private AlertService alertService;
 
     // ------------------------------------------------------------------ autenticación (401) y autorización (403)
 
@@ -255,6 +260,22 @@ class RabbitAdminApiIntegrationTest {
         mvc.perform(auth(get("/exchanges"), adminToken()))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.message", containsString("RabbitMQ no está disponible")));
+    }
+
+    @Test
+    void alertas_soloAdmin_yDevuelveElSnapshot() throws Exception {
+        when(alertService.current()).thenReturn(new AlertInfo.Snapshot(Instant.now(), false, 1, List.of(
+                new AlertInfo.Alert(AlertInfo.Severity.CRITICA, AlertInfo.Type.DLQ_CON_MENSAJES,
+                        "inventario.movimientos.dlq", "1 mensaje(s) fallido(s) esperando revisión", Instant.now()))));
+
+        mvc.perform(auth(get("/alerts"), token(c -> c.claim("roles", List.of("USER")))))
+                .andExpect(status().isForbidden());
+        mvc.perform(auth(get("/alerts"), adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ok").value(false))
+                .andExpect(jsonPath("$.alerts[0].type").value("DLQ_CON_MENSAJES"));
+        mvc.perform(auth(get("/alerts?refresh=true"), adminToken())).andExpect(status().isOk());
+        verify(alertService).refresh();
     }
 
     // ------------------------------------------------------------------ helpers

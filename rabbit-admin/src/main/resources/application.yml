@@ -26,9 +26,17 @@ app:
     # Prefijos de los recursos que usa la API de inventario. No se pueden crear ni borrar desde aquí:
     # borrarlos rompería la app y crear recursos con esos nombres los mezclaría con los del sistema.
     # "amq." lo reserva RabbitMQ y lo rechaza la validación del DTO.
-    protected-prefixes: ${ADMIN_PROTECTED_PREFIXES:charmeetchic.,inventario.,notificaciones.}
+    protected-prefixes: ${ADMIN_PROTECTED_PREFIXES:charmeetchic.,inventario.,notificaciones.,ventas.}
   security:
     # Project ID de Firebase: de él salen el issuer y la audience exigidos en el token.
     firebase-project-id: ${FIREBASE_PROJECT_ID:charme-et-chic}
     # Claves públicas con que Google firma los ID tokens de Firebase (formato JWKS).
     jwk-set-uri: ${FIREBASE_JWK_SET_URI:https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com}
+  alerts:
+    # Monitor programado (AlertMonitor): revisa colas y nodos por la API de management y deja ALERTA en el
+    # log cuando aparece un problema (y "RESUELTA" cuando desaparece). El estado se ve en GET /alerts.
+    enabled: ${ALERTS_ENABLED:true}
+    interval-ms: ${ALERTS_INTERVAL_MS:30000}
+    # Una cola principal sobre este % de su x-max-length genera una advertencia (100 % = crítica).
+    queue-usage-percent: ${ALERTS_QUEUE_USAGE_PERCENT:80}
+    dead-letter-suffix: .dlq

@@ -31,7 +31,8 @@ class RabbitManagementClientTest {
         client = new RabbitManagementClient(builder, new AppProperties(
                 new AppProperties.Rabbitmq("http://rabbit:15672"),
                 new AppProperties.Admin(List.of("charmeetchic.")),
-                new AppProperties.Security("charme-et-chic", "http://jwks")), rabbit);
+                new AppProperties.Security("charme-et-chic", "http://jwks"),
+                new AppProperties.Alerts(false, 30_000, 80, ".dlq")), rabbit);
     }
 
     @Test

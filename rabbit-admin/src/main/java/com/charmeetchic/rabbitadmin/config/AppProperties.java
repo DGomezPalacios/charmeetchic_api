@@ -1,6 +1,8 @@
 package com.charmeetchic.rabbitadmin.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -18,7 +20,22 @@ import java.util.List;
 public record AppProperties(
         @NotNull @Valid Rabbitmq rabbitmq,
         @NotNull @Valid Admin admin,
-        @NotNull @Valid Security security) {
+        @NotNull @Valid Security security,
+        @NotNull @Valid Alerts alerts) {
+
+    /**
+     * Monitor de alertas operacionales ({@code AlertMonitor}).
+     *
+     * @param enabled           revisar periódicamente (los tests lo apagan)
+     * @param intervalMs        cada cuánto se revisa
+     * @param queueUsagePercent alerta cuando una cola supera este % de su x-max-length
+     * @param deadLetterSuffix  cómo reconocer una DLQ por su nombre
+     */
+    public record Alerts(boolean enabled,
+                         @Min(value = 5_000, message = "app.alerts.interval-ms debe ser al menos 5000") long intervalMs,
+                         @Min(1) @Max(100) int queueUsagePercent,
+                         @NotBlank(message = "falta app.alerts.dead-letter-suffix") String deadLetterSuffix) {
+    }
 
     /** @param managementUrl URL base de la API HTTP del plugin de administración (sin /api) */
     public record Rabbitmq(@NotBlank(message = "falta app.rabbitmq.management-url") String managementUrl) {
