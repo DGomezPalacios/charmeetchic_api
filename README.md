@@ -335,6 +335,9 @@ El resto de la configuración está en `src/main/resources/application.yml`.
 Los nombres de exchanges, colas y routing keys están **solo** en `application.yml` (`app.messaging`) y se
 declaran como beans en `messaging/config/RabbitMQConfig.java`. La API crea la topología sola al conectarse.
 
+> Para administrar colas, exchanges y bindings por API REST está el microservicio aparte
+> [`rabbit-admin/`](rabbit-admin/README.md) (puerto 8081).
+
 | Cola | Exchange (tipo) | Routing key | DLQ |
 |---|---|---|---|
 | `inventario.stock-bajo` | `charmeetchic.inventario` (direct) | `inventario.stock-bajo` | `inventario.stock-bajo.dlq` |
