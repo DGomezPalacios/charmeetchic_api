@@ -31,4 +31,4 @@ app:
     # Project ID de Firebase: de él salen el issuer y la audience exigidos en el token.
     firebase-project-id: ${FIREBASE_PROJECT_ID:charme-et-chic}
     # Claves públicas con que Google firma los ID tokens de Firebase (formato JWKS).
-    jwk-set-uri: https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com
+    jwk-set-uri: ${FIREBASE_JWK_SET_URI:https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com}

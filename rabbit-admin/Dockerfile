@@ -24,5 +24,7 @@ RUN useradd --system --uid 1001 --no-create-home appuser
 COPY --from=build /build/target/charmeetchic-rabbit-admin-*.jar app.jar
 USER appuser
 EXPOSE 8081
-# MaxRAMPercentage: la JVM respeta el límite de memoria del contenedor (importante en una EC2 chica).
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+# JAVA_OPTS lo define docker-compose.prod.yml (p. ej. -Xmx224m) para repartir los 4 GB de la VM.
+# Por defecto la JVM usa hasta el 75 % del límite de memoria del contenedor.
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75"
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]
