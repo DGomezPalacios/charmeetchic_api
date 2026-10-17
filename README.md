@@ -3,7 +3,8 @@
 API REST para el **control de inventario** de la tienda de accesorios y joyas **Charme et Chic**, diseñada para
 crecer hacia un ecommerce (carrito, checkout, pagos).
 
-- **Stack:** Java 17+ · Spring Boot 3.2 · Spring Security · Spring Data JPA · H2 (desarrollo) · JWT · Maven
+- **Stack:** Java 17+ · Spring Boot 3.2 · Spring Security · Spring Data JPA · H2 (desarrollo) / PostgreSQL
+  (producción, perfil `prod`) · RabbitMQ · JWT · Maven
 - **Autenticación:** **Firebase Authentication**. La API valida los *ID tokens* de Firebase (firma RS256 con las claves
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
@@ -412,6 +413,25 @@ routing key `inventario.movimientos`, payload `esto no es json`. El log muestra
 
 **Alerta de stock bajo:** compra 4 unidades del "Estuche Joyero Viaje" (`ACC-EST-003`, stock 8). El log
 muestra `ALERTA STOCK BAJO`. Una segunda compra del mismo producto solo genera el movimiento, sin otra alerta.
+
+---
+
+## Producción (Azure)
+
+El repo tiene tres apps Spring Boot independientes y un compose que las levanta en una sola VM:
+
+| Carpeta | App | Puerto interno |
+|---|---|---|
+| `/` | API de inventario (este README) | 8080 |
+| [`rabbit-admin/`](rabbit-admin/README.md) | Administrador de RabbitMQ | 8081 |
+| [`gateway/`](gateway/README.md) | API Gateway (valida JWT, CORS, rutas) | 8000 |
+
+`docker-compose.prod.yml` agrega RabbitMQ en clúster de 2 nodos, PostgreSQL y Caddy (HTTPS con Let's Encrypt).
+Guía paso a paso (crear la VM, NSG, Docker, `.env`, verificar el clúster): **[deploy/README.md](deploy/README.md)**.
+
+Perfil `prod` del backend (`application-prod.yml`): PostgreSQL por variables de entorno (`DB_URL`,
+`DB_USERNAME`, `DB_PASSWORD`), `ddl-auto: update` (no borra datos al reiniciar), catálogo inicial idempotente
+(`data-prod.sql`) y `forward-headers-strategy` para generar URLs `https://` detrás del proxy.
 
 ---
 
