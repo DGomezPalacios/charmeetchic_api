@@ -10,11 +10,16 @@ import com.charmeetchic.api.exception.InsufficientStockException;
 import com.charmeetchic.api.messaging.consumer.inventario.StockMovementConsumer;
 import com.charmeetchic.api.messaging.consumer.notificaciones.ReportRequestConsumer;
 import com.charmeetchic.api.messaging.event.LowStockEvent;
+import com.charmeetchic.api.messaging.consumer.ventas.SaleAuditConsumer;
+import com.charmeetchic.api.messaging.consumer.ventas.SalesMetricsConsumer;
 import com.charmeetchic.api.messaging.event.ReportRequestedEvent;
+import com.charmeetchic.api.messaging.event.SaleCompletedEvent;
 import com.charmeetchic.api.messaging.event.StockMovementEvent;
 import com.charmeetchic.api.repository.ProductRepository;
 import com.charmeetchic.api.service.AsyncReportService;
 import com.charmeetchic.api.service.OrderService;
+import com.charmeetchic.api.service.SalesAuditService;
+import com.charmeetchic.api.service.SalesMetricsService;
 import com.charmeetchic.api.service.StockAuditService;
 import com.rabbitmq.client.Channel;
 import io.jsonwebtoken.Jwts;
@@ -48,6 +53,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.hamcrest.Matchers.hasItems;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
@@ -72,6 +78,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "app.messaging.enabled=true",
         "spring.datasource.url=jdbc:h2:mem:messagingtest",
+        // puerto sin broker: el test no depende de si hay un RabbitMQ corriendo en la máquina
+        "spring.rabbitmq.addresses=localhost:1",
         "app.jwt.mode=local",
         "app.jwt.local-secret=" + MessagingIntegrationTest.SECRET
 })
@@ -90,6 +98,10 @@ class MessagingIntegrationTest {
     @Autowired private ReportRequestConsumer reportConsumer;
     @Autowired private StockMovementConsumer movementConsumer;
     @Autowired private MessageConverter messageConverter;
+    @Autowired private SaleAuditConsumer saleAuditConsumer;
+    @Autowired private SalesMetricsConsumer salesMetricsConsumer;
+    @Autowired private SalesAuditService salesAuditService;
+    @Autowired private SalesMetricsService salesMetricsService;
 
     @BeforeEach
     void reset() {
@@ -111,6 +123,39 @@ class MessagingIntegrationTest {
         assertThat(event.quantity()).isEqualTo(-2);
         assertThat(event.reference()).startsWith("orden #");
         assertThat(captured("charmeetchic.inventario", "inventario.stock-bajo", LowStockEvent.class)).isEmpty();
+    }
+
+    @Test
+    void ordenConfirmada_publicaUnSoloEventoDeVentaAlFanout() {
+        Product product = bySku("ACC-CIN-002"); // stock 60
+
+        orderService.createOrder("u-msg-fanout", "Calle 9", List.of(new CartItemDTO(product.getId(), 3)));
+
+        // UN mensaje al exchange fanout (routing key vacía): RabbitMQ hace las copias para cada cola
+        List<SaleCompletedEvent> sales = captured("charmeetchic.ventas", "", SaleCompletedEvent.class);
+        assertThat(sales).singleElement().satisfies(sale -> {
+            assertThat(sale.userId()).isEqualTo("u-msg-fanout");
+            assertThat(sale.units()).isEqualTo(3);
+            assertThat(sale.lines()).isEqualTo(1);
+        });
+    }
+
+    @Test
+    void losDosSuscriptoresDelFanout_procesanElMismoEventoCadaUnoASuManera() throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        SaleCompletedEvent sale = new SaleCompletedEvent(eventId, 777L, "u-fanout", 2, 5,
+                new java.math.BigDecimal("1000.00"), Instant.now());
+        long ordersBefore = salesMetricsService.snapshot().orders();
+        Channel channel = mock(Channel.class);
+
+        saleAuditConsumer.onSale(toMessage(sale, eventId, "ventas.auditoria", 11L), channel);
+        salesMetricsConsumer.onSale(toMessage(sale, eventId, "ventas.metricas", 12L), channel);
+
+        verify(channel).basicAck(11L, false);
+        verify(channel).basicAck(12L, false);
+        assertThat(salesAuditService.getRecords(Pageable.unpaged()).getContent())
+                .anySatisfy(r -> assertThat(r.eventId()).isEqualTo(eventId));
+        assertThat(salesMetricsService.snapshot().orders()).isEqualTo(ordersBefore + 1);
     }
 
     @Test
@@ -227,6 +272,30 @@ class MessagingIntegrationTest {
                 .andExpect(status().isBadRequest());
         mvc.perform(get("/reports/async/no-existe").header("Authorization", bearer("ADMIN")))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void endpointsDeVentasYConsumidores_existenYSonSoloAdmin() throws Exception {
+        mvc.perform(get("/reports/sales-metrics").header("Authorization", bearer("ADMIN")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.orders").isNumber());
+        mvc.perform(get("/reports/sales-audit").header("Authorization", bearer("ADMIN")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.content").isArray());
+        mvc.perform(get("/messaging/consumers").header("Authorization", bearer("USER")))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/messaging/consumers").header("Authorization", bearer("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].id", hasItems("consumidor-consulta-stock", "consumidor-movimientos",
+                        "consumidor-reportes", "consumidor-stock-bajo", "consumidor-ventas-auditoria",
+                        "consumidor-ventas-metricas")));
+        mvc.perform(post("/messaging/consumers/no-existe/pause").header("Authorization", bearer("ADMIN")))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void consultaSincronaDeStock_sinRabbitMQ_es503() throws Exception {
+        // en los tests no hay broker: el RPC no puede publicar -> 503 (y nunca 500)
+        mvc.perform(get("/inventory/stock-check/ANI-SOL-001").header("Authorization", bearer("USER")))
+                .andExpect(status().isServiceUnavailable());
     }
 
     @Test
