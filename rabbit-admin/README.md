@@ -27,6 +27,7 @@ Todos exigen `Authorization: Bearer <ID token de Firebase>` de un usuario **ADMI
 | POST | `/exchanges` | `201` · `200` · `409` (p. ej. mismo nombre, otro tipo) |
 | DELETE | `/exchanges/{name}` | `204` · `404` |
 | GET | `/bindings` | Bindings exchange → cola |
+| GET | `/alerts?refresh=` | Alertas operacionales (DLQ con mensajes, colas llenas o sin consumidores, nodos caídos, alarmas de memoria/disco) |
 | POST | `/bindings` | `201` · `200` · `404` si la cola o el exchange no existen |
 | DELETE | `/bindings?exchange=&queue=&routingKey=` | `204` · `404` |
 
@@ -54,7 +55,7 @@ curl -H "$A" -X DELETE $U/queues/inventario.stock-bajo      # 403: es del sistem
 
 ### Recursos protegidos
 
-Prefijos `charmeetchic.`, `inventario.` y `notificaciones.` (`ADMIN_PROTECTED_PREFIXES`): no se pueden
+Prefijos `charmeetchic.`, `inventario.`, `notificaciones.` y `ventas.` (`ADMIN_PROTECTED_PREFIXES`): no se pueden
 **crear ni borrar** colas o exchanges con esos nombres, ni bindings **hacia** una cola del sistema. Sí se
 permite unir un exchange del sistema a una cola propia: por ejemplo, `charmeetchic.inventario` →
 `auditoria.copia` con `inventario.movimientos` recibe una copia de cada movimiento sin afectar a la API.
@@ -89,5 +90,7 @@ propio. `SecurityConfig` define el `JwtDecoder` con:
 | `RABBITMQ_USERNAME` / `RABBITMQ_PASSWORD` | `guest` / `guest` | Credenciales (AMQP y HTTP); solo desarrollo |
 | `RABBITMQ_VHOST` | `/` | Virtual host |
 | `RABBITMQ_MANAGEMENT_URL` | `http://localhost:15672` | API HTTP de administración |
-| `ADMIN_PROTECTED_PREFIXES` | `charmeetchic.,inventario.,notificaciones.` | Prefijos protegidos |
+| `ADMIN_PROTECTED_PREFIXES` | `charmeetchic.,inventario.,notificaciones.,ventas.` | Prefijos protegidos |
+| `ALERTS_ENABLED` / `ALERTS_INTERVAL_MS` | `true` / `30000` | Monitor de alertas (`AlertMonitor`, `@Scheduled`) |
+| `ALERTS_QUEUE_USAGE_PERCENT` | `80` | % de `x-max-length` desde el que una cola genera advertencia |
 | `FIREBASE_PROJECT_ID` | `charme-et-chic` | Define el issuer y la audience exigidos |

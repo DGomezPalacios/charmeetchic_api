@@ -339,13 +339,17 @@ declaran como beans en `messaging/config/RabbitMQConfig.java`. La API crea la to
 > Para administrar colas, exchanges y bindings por API REST está el microservicio aparte
 > [`rabbit-admin/`](rabbit-admin/README.md) (puerto 8081).
 
-| Cola | Exchange (tipo) | Routing key | DLQ |
-|---|---|---|---|
-| `inventario.stock-bajo` | `charmeetchic.inventario` (direct) | `inventario.stock-bajo` | `inventario.stock-bajo.dlq` |
-| `inventario.movimientos` | `charmeetchic.inventario` (direct) | `inventario.movimientos` | `inventario.movimientos.dlq` |
-| `notificaciones.reportes` | `charmeetchic.notificaciones` (topic) | `notificacion.reporte.*` | `notificaciones.reportes.dlq` |
+| Cola | Exchange (tipo) | Routing key | Patrón | DLQ |
+|---|---|---|---|---|
+| `inventario.stock-bajo` | `charmeetchic.inventario` (direct) | `inventario.stock-bajo` | asíncrono | `inventario.stock-bajo.dlq` |
+| `inventario.movimientos` | `charmeetchic.inventario` (direct) | `inventario.movimientos` | asíncrono | `inventario.movimientos.dlq` |
+| `inventario.consulta-stock` | `charmeetchic.inventario` (direct) | `inventario.consulta-stock` | **síncrono (RPC)** | — (TTL = timeout) |
+| `notificaciones.reportes` | `charmeetchic.notificaciones` (topic) | `notificacion.reporte.*` | asíncrono | `notificaciones.reportes.dlq` |
+| `ventas.auditoria` | `charmeetchic.ventas` (**fanout**) | — | publish/subscribe | `ventas.auditoria.dlq` |
+| `ventas.metricas` | `charmeetchic.ventas` (**fanout**) | — | publish/subscribe | `ventas.metricas.dlq` |
 
-Los mensajes rechazados (NACK sin reencolar) van al DLX `charmeetchic.dlx`, que los deja en la DLQ de su cola.
+Los mensajes rechazados (NACK sin reencolar), vencidos (TTL) o descartados por cola llena van al DLX
+`charmeetchic.dlx`, que los deja en la DLQ de su cola.
 
 ```bash
 docker compose up -d            # RabbitMQ local (1 nodo) + consola en http://localhost:15672 (guest/guest)
@@ -362,9 +366,96 @@ La API **no depende** de que RabbitMQ esté arriba para arrancar, y `mvn verify`
 | Crear orden / cancelar orden / editar stock / crear producto | `inventario.movimientos` | Siempre que cambia el stock |
 | Las mismas | `inventario.stock-bajo` | Solo si el stock **cruza** el umbral (antes ≥ 5, después < 5) |
 | `POST /api/reports/inventory/async` | `notificaciones.reportes` | Una vez por solicitud |
+| Crear orden | `charmeetchic.ventas` (fanout) → `ventas.auditoria` y `ventas.metricas` | **Un** evento; RabbitMQ entrega una copia a cada cola |
+| `GET /api/inventory/stock-check/{sku}` | `inventario.consulta-stock` | Espera la respuesta (RPC) |
 
 Los mensajes se publican **después del commit**: si la orden falla (p. ej. 409 por stock insuficiente), no
 sale ningún mensaje y la auditoría no registra movimientos falsos.
+
+### Síncrono vs. asíncrono
+
+| | Síncrono — `GET /api/inventory/stock-check/{sku}` | Asíncrono — `POST /api/reports/inventory/async` |
+|---|---|---|
+| Qué hace el cliente HTTP | **Espera** la respuesta del consumidor | Recibe **202 + id** al instante y consulta después |
+| Cómo vuelve la respuesta | `convertSendAndReceive` con **direct reply-to** (`reply_to` + `correlation_id`) | Se guarda en BD; `GET /api/reports/async/{id}` |
+| Si el consumidor no está | **504** a los `RABBITMQ_RPC_TIMEOUT_MS` (3 s) | El mensaje espera en la cola; se procesa al volver |
+| Cuándo conviene | Respuesta corta y que se necesita ya | Trabajo lento, reintentable o que no debe bloquear |
+
+### Publish/subscribe (fanout)
+
+Al crear una orden se publica **un** `SaleCompletedEvent` en `charmeetchic.ventas`. El exchange fanout ignora la
+routing key y entrega una copia a **cada** cola unida: `ventas.auditoria` la guarda en BD
+(`GET /api/reports/sales-audit`) y `ventas.metricas` actualiza un resumen en memoria
+(`GET /api/reports/sales-metrics`). Son independientes: si uno se detiene, el otro sigue; sumar un tercer
+suscriptor es solo unir otra cola al exchange.
+
+### Retención
+
+| Cola | `x-max-length` | `x-message-ttl` | Por qué |
+|---|---|---|---|
+| `inventario.stock-bajo` | 1.000 | 24 h | Una alerta de reposición vieja ya no sirve: vence y queda en la DLQ |
+| `inventario.movimientos` | 10.000 | — | Auditoría: nunca debe vencer |
+| `notificaciones.reportes` | 500 | — | — |
+| `inventario.consulta-stock` | 1.000 | 3 s (= timeout RPC) | Pasado el timeout nadie espera la respuesta |
+| `ventas.auditoria` / `ventas.metricas` | 10.000 | — | — |
+| **todas las DLQ** | 10.000 | **7 días** | Revisar fallos sin que crezcan sin límite |
+
+**Overflow `drop-head`** (descarta el más antiguo): como las colas tienen DLX, el mensaje descartado va a la DLQ
+con motivo `maxlen`, nada se pierde en silencio. Con `reject-publish` se rechazaría el mensaje NUEVO y, como el
+productor no usa *publisher confirms*, se perdería sin rastro.
+
+**Argumentos de cola vs. policy del broker.** Se aplican como **argumentos** declarados en `RabbitMQConfig`
+(valores en `app.messaging.retention` y en cada cola del yml): quedan versionados con el código, se ven en la
+consola y se prueban en `RabbitMQConfigTest`. La contra: RabbitMQ no permite cambiar los argumentos de una cola
+existente (`PRECONDITION_FAILED - inequivalent arg ...`). Para cambiarlos:
+
+```bash
+./deploy/recrear-colas.sh        # borra las colas de la app (¡y sus mensajes!); pide confirmación
+# y reiniciar la API para que las vuelva a declarar
+```
+
+Una *policy* (`rabbitmqctl set_policy`) sí se puede cambiar en caliente, pero los valores quedarían fuera del
+código y del yml. Como la VM de Azure se crea desde cero, los argumentos no generan conflicto allí.
+
+### Alertas operacionales
+
+`rabbit-admin` revisa RabbitMQ cada 30 s (`AlertMonitor`, `@Scheduled`) por la API de management y deja
+`ALERTA` en su log cuando aparece un problema (y `ALERTA RESUELTA` cuando se va). `GET /admin/alerts` (por el
+gateway) muestra el estado; `?refresh=true` revisa en el momento.
+
+| Alerta | Severidad |
+|---|---|
+| DLQ con mensajes | CRITICA |
+| Cola principal llena / sobre el 80 % de su `x-max-length` | CRITICA / ADVERTENCIA |
+| Cola con mensajes y sin consumidores | ADVERTENCIA |
+| Nodo del clúster caído | CRITICA |
+| Alarma de memoria o de disco de RabbitMQ | CRITICA |
+| API de management inalcanzable | CRITICA |
+
+Para provocar la alarma de disco en la demo (también se ve en rojo en la consola, Overview → Nodes):
+`docker exec <contenedor-rabbitmq> rabbitmqctl set_disk_free_limit 100000GB` y para volver:
+`rabbitmqctl set_disk_free_limit 1GB`. Mientras dure, RabbitMQ **bloquea a los productores**: no crear órdenes.
+
+### Durabilidad (procedimiento de demo)
+
+Las colas y exchanges son **durables** y los mensajes se publican **persistentes** (`delivery_mode=2`): sobreviven
+a un reinicio del broker. Para mostrarlo (con token ADMIN):
+
+```bash
+API=https://<DOMAIN>/api; AUTH="Authorization: Bearer $TOKEN"
+curl -H "$AUTH" $API/messaging/consumers                                          # ids y estado
+curl -H "$AUTH" -X POST $API/messaging/consumers/consumidor-movimientos/pause     # 1. pausar
+curl -H "$AUTH" -H "Content-Type: application/json" -X POST $API/orders \
+     -d '{"shippingAddress":"Demo","items":[{"productId":1,"quantity":1}]}'       # 2. publicar
+#   consola: inventario.movimientos tiene 1 mensaje "Ready" y 0 consumidores; /admin/alerts lo avisa
+docker compose -f docker-compose.prod.yml restart rabbitmq1                       # 3. reiniciar el broker
+#   consola: el mensaje SIGUE ahí
+curl -H "$AUTH" -X POST $API/messaging/consumers/consumidor-movimientos/resume    # 4. reanudar
+#   log del backend: "Auditoría: VENTA ..." y "ACK (procesado)"; la cola queda en 0
+```
+
+El control de consumidores está en la API de inventario y no en `rabbit-admin` porque los consumidores son de
+ese proceso: RabbitMQ no tiene una operación para "pausar" el consumidor de otra aplicación.
 
 ### ACK manual, reintentos y DLQ
 

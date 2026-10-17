@@ -119,6 +119,8 @@ En el frontend (Firebase Hosting) la URL de la API pasa a ser `https://<DOMAIN>/
 |---|---|
 | Logs de un servicio | `docker compose -f docker-compose.prod.yml logs -f backend` |
 | Actualizar a la última versión | `git pull && docker compose -f docker-compose.prod.yml up -d --build` |
+| Cambió la retención de una cola (PRECONDITION_FAILED en el log) | `RABBIT_USER=charme_admin RABBIT_PASS=<clave> ./deploy/recrear-colas.sh` y `docker compose -f docker-compose.prod.yml restart backend` |
+| Alertas de RabbitMQ | `curl -H "Authorization: Bearer $T" https://<DOMAIN>/admin/alerts?refresh=true` |
 | Reiniciar uno | `docker compose -f docker-compose.prod.yml restart backend` |
 | Apagar (conserva datos) | `docker compose -f docker-compose.prod.yml down` |
 | Borrar TODO (datos incluidos) | `docker compose -f docker-compose.prod.yml down -v` (¡borra también el certificado!) |
