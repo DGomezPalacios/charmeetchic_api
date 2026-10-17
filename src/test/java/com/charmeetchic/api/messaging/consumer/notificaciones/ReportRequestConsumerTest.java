@@ -38,8 +38,8 @@ class ReportRequestConsumerTest {
     private final AsyncReportService reportService = mock(AsyncReportService.class);
 
     private ReportRequestConsumer consumer(boolean simulatedFailuresEnabled) {
-        MessagingProperties props = new MessagingProperties(true, new MessagingProperties.Retry(3, 0),
-                new MessagingProperties.Demo(simulatedFailuresEnabled), null, null);
+        MessagingProperties props = new MessagingProperties(true, new MessagingProperties.Retry(3, 0), new MessagingProperties.Rpc(3000),
+                new MessagingProperties.Demo(simulatedFailuresEnabled), null, null, null);
         ManualAckProcessor processor = new ManualAckProcessor(objectMapper,
                 Validation.buildDefaultValidatorFactory().getValidator(), rabbitTemplate, props);
         return new ReportRequestConsumer(processor, reportService, props);

@@ -54,7 +54,7 @@ class ManualAckProcessorTest {
         channel = mock(Channel.class);
         rabbitTemplate = mock(RabbitTemplate.class);
         MessagingProperties props = new MessagingProperties(true,
-                new MessagingProperties.Retry(MAX_ATTEMPTS, 0), new MessagingProperties.Demo(true), null, null);
+                new MessagingProperties.Retry(MAX_ATTEMPTS, 0), new MessagingProperties.Rpc(3000), new MessagingProperties.Demo(true), null, null, null);
         processor = new ManualAckProcessor(objectMapper,
                 Validation.buildDefaultValidatorFactory().getValidator(), rabbitTemplate, props);
     }

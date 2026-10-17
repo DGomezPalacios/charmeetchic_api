@@ -1,12 +1,14 @@
 package com.charmeetchic.api.messaging.config;
 
 import com.charmeetchic.api.messaging.config.MessagingProperties.QueueProperties;
+import com.charmeetchic.api.messaging.config.MessagingProperties.SubscriberQueueProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.ExchangeBuilder;
+import org.springframework.amqp.core.FanoutExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
@@ -18,7 +20,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Topología de RabbitMQ: exchanges, colas, DLQ y bindings de los 3 casos de uso.
+ * Topología de RabbitMQ: exchanges, colas, DLQ, bindings y políticas de retención de cada caso de uso.
  *
  * <p><b>Cómo funciona:</b> esta clase solo DECLARA beans. Spring Boot crea un {@code RabbitAdmin} que, la
  * primera vez que la aplicación abre una conexión con el broker, recorre todos los beans {@link Queue},
@@ -32,25 +34,32 @@ import org.springframework.context.annotation.Configuration;
  * <p><b>Separación de responsabilidades:</b> aquí no hay lógica de negocio. Los servicios no conocen
  * nombres de colas ni crean objetos AMQP; solo usan los publicadores del paquete {@code messaging.producer}.
  *
- * <p><b>Dead Letter (DLQ):</b> cada cola principal tiene el argumento {@code x-dead-letter-exchange} apuntando
- * al DLX ({@code charmeetchic.dlx}) y {@code x-dead-letter-routing-key} con el nombre de SU DLQ. Cuando un
- * consumidor rechaza un mensaje sin reencolarlo (NACK con requeue=false), RabbitMQ lo reenvía al DLX con
- * esa routing key y el DLX lo deja en la DLQ correspondiente. Un solo DLX de tipo direct basta para las
- * tres colas porque cada una usa una routing key distinta.
- *
  * <pre>
  *  [charmeetchic.inventario] (direct)
- *      ├─ inventario.stock-bajo  ─────────► inventario.stock-bajo   ──NACK──┐
- *      └─ inventario.movimientos ─────────► inventario.movimientos  ──NACK──┤
- *  [charmeetchic.notificaciones] (topic)                                    │
- *      └─ notificacion.reporte.* ─────────► notificaciones.reportes ──NACK──┤
- *                                                                           ▼
- *  [charmeetchic.dlx] (direct) ──► inventario.stock-bajo.dlq / inventario.movimientos.dlq /
- *                                  notificaciones.reportes.dlq
+ *      ├─ inventario.stock-bajo     ──► inventario.stock-bajo     ─NACK/TTL/lleno─┐   asíncrono
+ *      ├─ inventario.movimientos    ──► inventario.movimientos    ─NACK/lleno────┤   asíncrono
+ *      └─ inventario.consulta-stock ──► inventario.consulta-stock (RPC, sin DLQ)  │   SÍNCRONO
+ *  [charmeetchic.notificaciones] (topic)                                          │
+ *      └─ notificacion.reporte.*    ──► notificaciones.reportes   ─NACK/lleno────┤   asíncrono
+ *  [charmeetchic.ventas] (fanout) ──┬► ventas.auditoria           ─NACK/lleno────┤   publish/subscribe
+ *                                   └► ventas.metricas            ─NACK/lleno────┤
+ *                                                                                 ▼
+ *  [charmeetchic.dlx] (direct) ──► una DLQ por cola (&lt;cola&gt;.dlq), con TTL de 7 días y tope de tamaño
  * </pre>
  *
- * <p>Todas las colas y exchanges son <b>durables</b>: sobreviven a un reinicio del broker. Los mensajes se
- * publican como persistentes (comportamiento por defecto de {@code RabbitTemplate}).
+ * <p><b>Dead Letter:</b> cada cola principal tiene {@code x-dead-letter-exchange} = DLX y
+ * {@code x-dead-letter-routing-key} = nombre de SU DLQ. RabbitMQ manda al DLX los mensajes que un consumidor
+ * rechaza sin reencolar (NACK requeue=false), los que vencen ({@code x-message-ttl}) y los que se descartan
+ * porque la cola se llenó ({@code x-max-length} + {@code x-overflow=drop-head}). Un solo DLX direct basta
+ * porque cada cola usa una routing key distinta.
+ *
+ * <p><b>Retención</b> (valores en {@code app.messaging.retention} y en cada cola del yml): se aplica como
+ * ARGUMENTOS de la cola. Ventaja: queda versionada en el código y se ve en la consola. Límite: RabbitMQ no
+ * permite cambiar los argumentos de una cola existente (PRECONDITION_FAILED); para cambiarlos hay que borrar
+ * la cola y dejar que la app la vuelva a declarar (ver README, "Retención").
+ *
+ * <p><b>Durabilidad:</b> todas las colas y exchanges son durables (sobreviven a un reinicio del broker) y los
+ * mensajes se publican persistentes (lo hace {@code RabbitTemplate} por defecto).
  */
 @Slf4j
 @Configuration
@@ -61,10 +70,12 @@ public class RabbitMQConfig {
 
     public RabbitMQConfig(MessagingProperties props) {
         this.props = props;
-        log.info("Topología RabbitMQ: exchanges [{} (direct), {} (topic), {} (DLX)], colas [{}, {}, {}]",
-                props.exchanges().inventario(), props.exchanges().notificaciones(), props.exchanges().deadLetter(),
-                props.queues().stockBajo().name(), props.queues().movimientos().name(),
-                props.queues().reportes().name());
+        var e = props.exchanges();
+        var q = props.queues();
+        log.info("Topología RabbitMQ: exchanges [{} (direct), {} (topic), {} (fanout), {} (DLX)], colas [{}, {}, {}, "
+                        + "{} (RPC), {}, {}], overflow={}", e.inventario(), e.notificaciones(), e.ventas(), e.deadLetter(),
+                q.stockBajo().name(), q.movimientos().name(), q.reportes().name(), q.consultaStock().name(),
+                q.ventasAuditoria().name(), q.ventasMetricas().name(), props.retention().overflow());
     }
 
     // =====================================================================================
@@ -77,7 +88,7 @@ public class RabbitMQConfig {
      * <ul>
      *   <li>Se lee en la consola de RabbitMQ: útil para la demo y para depurar.</li>
      *   <li>Usa el mismo {@link ObjectMapper} de Spring que los endpoints REST (fechas ISO-8601, etc.).</li>
-     *   <li>Si alguna vez se usara para leer, solo confía en las clases del paquete {@code messaging.event}.</li>
+     *   <li>Al leer (respuesta del RPC) solo confía en las clases del paquete {@code messaging.event}.</li>
      * </ul>
      *
      * <p>Spring Boot detecta este bean y lo inyecta en el {@code RabbitTemplate}.
@@ -91,7 +102,7 @@ public class RabbitMQConfig {
     // Exchanges
     // =====================================================================================
 
-    /** Exchange direct de inventario: enruta por coincidencia EXACTA de routing key (stock-bajo, movimientos). */
+    /** Exchange direct de inventario: enruta por coincidencia EXACTA de routing key. */
     @Bean
     public DirectExchange inventarioExchange() {
         return ExchangeBuilder.directExchange(props.exchanges().inventario()).durable(true).build();
@@ -103,37 +114,41 @@ public class RabbitMQConfig {
         return ExchangeBuilder.topicExchange(props.exchanges().notificaciones()).durable(true).build();
     }
 
-    /** Dead Letter Exchange compartido: recibe lo que las colas principales rechazan y lo lleva a cada DLQ. */
+    /** Exchange fanout de ventas: entrega una COPIA de cada mensaje a TODAS sus colas (publish/subscribe). */
+    @Bean
+    public FanoutExchange ventasExchange() {
+        return ExchangeBuilder.fanoutExchange(props.exchanges().ventas()).durable(true).build();
+    }
+
+    /** Dead Letter Exchange compartido: recibe lo que las colas principales rechazan, vencen o descartan. */
     @Bean
     public DirectExchange deadLetterExchange() {
         return ExchangeBuilder.directExchange(props.exchanges().deadLetter()).durable(true).build();
     }
 
     // =====================================================================================
-    // Caso de uso 1: alerta de stock bajo  (exchange direct)
+    // Caso de uso 1: alerta de stock bajo  (direct, asíncrono)
     // Se publica cuando un producto queda bajo app.inventory.low-stock-threshold.
     // =====================================================================================
 
-    /** Cola de alertas de stock bajo. Lo rechazado va a {@code inventario.stock-bajo.dlq}. */
+    /** Cola de alertas de stock bajo (TTL 24 h: una alerta vieja pasa a la DLQ). */
     @Bean
     public Queue stockBajoQueue() {
         return mainQueue(props.queues().stockBajo());
     }
 
-    /** DLQ de stock bajo: alertas que fallaron tras los reintentos, para revisarlas a mano. */
+    /** DLQ de stock bajo: alertas que fallaron, vencieron o se descartaron. */
     @Bean
     public Queue stockBajoDeadLetterQueue() {
-        return QueueBuilder.durable(props.queues().stockBajo().deadLetterQueue()).build();
+        return deadLetterQueue(props.queues().stockBajo().deadLetterQueue());
     }
 
-    /** inventario exchange --(inventario.stock-bajo)--> cola stock-bajo. */
     @Bean
     public Binding stockBajoBinding(@Qualifier("stockBajoQueue") Queue queue,
                                     @Qualifier("inventarioExchange") DirectExchange exchange) {
         return BindingBuilder.bind(queue).to(exchange).with(props.queues().stockBajo().routingKey());
     }
 
-    /** DLX --(inventario.stock-bajo.dlq)--> DLQ de stock bajo. */
     @Bean
     public Binding stockBajoDeadLetterBinding(@Qualifier("stockBajoDeadLetterQueue") Queue dlq,
                                               @Qualifier("deadLetterExchange") DirectExchange dlx) {
@@ -141,30 +156,26 @@ public class RabbitMQConfig {
     }
 
     // =====================================================================================
-    // Caso de uso 2: auditoría de movimientos de stock  (exchange direct)
-    // Se publica en cada entrada/salida: venta, cancelación de orden, ajuste manual.
+    // Caso de uso 2: auditoría de movimientos de stock  (direct, asíncrono)
     // =====================================================================================
 
-    /** Cola de auditoría de movimientos de stock. Lo rechazado va a {@code inventario.movimientos.dlq}. */
+    /** Cola de auditoría de movimientos (sin TTL: un registro de auditoría nunca debe vencer). */
     @Bean
     public Queue movimientosQueue() {
         return mainQueue(props.queues().movimientos());
     }
 
-    /** DLQ de movimientos: registros de auditoría que no se pudieron procesar. */
     @Bean
     public Queue movimientosDeadLetterQueue() {
-        return QueueBuilder.durable(props.queues().movimientos().deadLetterQueue()).build();
+        return deadLetterQueue(props.queues().movimientos().deadLetterQueue());
     }
 
-    /** inventario exchange --(inventario.movimientos)--> cola movimientos. */
     @Bean
     public Binding movimientosBinding(@Qualifier("movimientosQueue") Queue queue,
                                       @Qualifier("inventarioExchange") DirectExchange exchange) {
         return BindingBuilder.bind(queue).to(exchange).with(props.queues().movimientos().routingKey());
     }
 
-    /** DLX --(inventario.movimientos.dlq)--> DLQ de movimientos. */
     @Bean
     public Binding movimientosDeadLetterBinding(@Qualifier("movimientosDeadLetterQueue") Queue dlq,
                                                 @Qualifier("deadLetterExchange") DirectExchange dlx) {
@@ -172,34 +183,26 @@ public class RabbitMQConfig {
     }
 
     // =====================================================================================
-    // Caso de uso 3: generación asíncrona de reportes de inventario  (exchange topic)
-    // La petición HTTP responde de inmediato; el reporte se arma en segundo plano.
+    // Caso de uso 3: generación asíncrona de reportes  (topic, asíncrono)
     // =====================================================================================
 
-    /** Cola de solicitudes de reporte. Lo rechazado va a {@code notificaciones.reportes.dlq}. */
     @Bean
     public Queue reportesQueue() {
         return mainQueue(props.queues().reportes());
     }
 
-    /** DLQ de reportes: solicitudes de reporte que fallaron tras los reintentos. */
     @Bean
     public Queue reportesDeadLetterQueue() {
-        return QueueBuilder.durable(props.queues().reportes().deadLetterQueue()).build();
+        return deadLetterQueue(props.queues().reportes().deadLetterQueue());
     }
 
-    /**
-     * notificaciones exchange --(notificacion.reporte.*)--> cola reportes.
-     * Calza con notificacion.reporte.inventario, notificacion.reporte.ventas, etc. (exactamente una palabra
-     * después del prefijo), así se pueden agregar tipos de reporte sin tocar la topología.
-     */
+    /** Calza con notificacion.reporte.inventario, notificacion.reporte.ventas... (una palabra tras el prefijo). */
     @Bean
     public Binding reportesBinding(@Qualifier("reportesQueue") Queue queue,
                                    @Qualifier("notificacionesExchange") TopicExchange exchange) {
         return BindingBuilder.bind(queue).to(exchange).with(props.queues().reportes().routingKey());
     }
 
-    /** DLX --(notificaciones.reportes.dlq)--> DLQ de reportes. */
     @Bean
     public Binding reportesDeadLetterBinding(@Qualifier("reportesDeadLetterQueue") Queue dlq,
                                              @Qualifier("deadLetterExchange") DirectExchange dlx) {
@@ -207,15 +210,126 @@ public class RabbitMQConfig {
     }
 
     // =====================================================================================
+    // Caso de uso 4: consulta de stock SÍNCRONA (request-reply / RPC, direct)
+    // El cliente publica la consulta y ESPERA la respuesta (direct reply-to) hasta rpc.timeout-ms.
+    // =====================================================================================
 
     /**
-     * Cola principal durable con su dead-lettering configurado: un NACK sin reencolar la manda al DLX con
-     * routing key = nombre de su DLQ.
+     * Cola de consultas RPC. TTL = timeout del cliente: pasado ese tiempo el cliente ya respondió 504 y la
+     * consulta no sirve. Sin DLQ a propósito: guardar consultas vencidas solo acumularía basura.
      */
-    private Queue mainQueue(QueueProperties queue) {
-        return QueueBuilder.durable(queue.name())
-                .deadLetterExchange(props.exchanges().deadLetter())
-                .deadLetterRoutingKey(queue.deadLetterQueue())
+    @Bean
+    public Queue consultaStockQueue() {
+        var q = props.queues().consultaStock();
+        return QueueBuilder.durable(q.name())
+                .maxLength(q.maxLength().longValue())
+                .overflow(overflow())
+                .ttl((int) props.rpc().timeoutMs())
                 .build();
+    }
+
+    @Bean
+    public Binding consultaStockBinding(@Qualifier("consultaStockQueue") Queue queue,
+                                        @Qualifier("inventarioExchange") DirectExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange).with(props.queues().consultaStock().routingKey());
+    }
+
+    // =====================================================================================
+    // Caso de uso 5: venta registrada  (fanout, publish/subscribe)
+    // UN evento por orden; DOS colas independientes, cada una con su consumidor y su DLQ.
+    // =====================================================================================
+
+    /** Suscriptor 1: auditoría de ventas. */
+    @Bean
+    public Queue ventasAuditoriaQueue() {
+        return subscriberQueue(props.queues().ventasAuditoria());
+    }
+
+    @Bean
+    public Queue ventasAuditoriaDeadLetterQueue() {
+        return deadLetterQueue(props.queues().ventasAuditoria().deadLetterQueue());
+    }
+
+    /** En fanout no hay routing key: la cola recibe todo lo que llega al exchange. */
+    @Bean
+    public Binding ventasAuditoriaBinding(@Qualifier("ventasAuditoriaQueue") Queue queue,
+                                          @Qualifier("ventasExchange") FanoutExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange);
+    }
+
+    @Bean
+    public Binding ventasAuditoriaDeadLetterBinding(@Qualifier("ventasAuditoriaDeadLetterQueue") Queue dlq,
+                                                    @Qualifier("deadLetterExchange") DirectExchange dlx) {
+        return BindingBuilder.bind(dlq).to(dlx).with(props.queues().ventasAuditoria().deadLetterQueue());
+    }
+
+    /** Suscriptor 2: métricas de ventas. */
+    @Bean
+    public Queue ventasMetricasQueue() {
+        return subscriberQueue(props.queues().ventasMetricas());
+    }
+
+    @Bean
+    public Queue ventasMetricasDeadLetterQueue() {
+        return deadLetterQueue(props.queues().ventasMetricas().deadLetterQueue());
+    }
+
+    @Bean
+    public Binding ventasMetricasBinding(@Qualifier("ventasMetricasQueue") Queue queue,
+                                         @Qualifier("ventasExchange") FanoutExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange);
+    }
+
+    @Bean
+    public Binding ventasMetricasDeadLetterBinding(@Qualifier("ventasMetricasDeadLetterQueue") Queue dlq,
+                                                   @Qualifier("deadLetterExchange") DirectExchange dlx) {
+        return BindingBuilder.bind(dlq).to(dlx).with(props.queues().ventasMetricas().deadLetterQueue());
+    }
+
+    // =====================================================================================
+    // Constructores de colas (retención aplicada en un solo lugar)
+    // =====================================================================================
+
+    private Queue mainQueue(QueueProperties queue) {
+        return withDeadLettering(queue.name(), queue.deadLetterQueue(), queue.maxLength(), queue.messageTtlMs());
+    }
+
+    private Queue subscriberQueue(SubscriberQueueProperties queue) {
+        return withDeadLettering(queue.name(), queue.deadLetterQueue(), queue.maxLength(), queue.messageTtlMs());
+    }
+
+    /**
+     * Cola principal durable: lo rechazado, vencido o descartado va al DLX con routing key = su DLQ.
+     * {@code x-max-length} + {@code x-overflow=drop-head}: si se llena, el mensaje más antiguo va a la DLQ.
+     */
+    private Queue withDeadLettering(String name, String deadLetterQueue, int maxLength, Long ttlMs) {
+        QueueBuilder builder = QueueBuilder.durable(name)
+                .deadLetterExchange(props.exchanges().deadLetter())
+                .deadLetterRoutingKey(deadLetterQueue)
+                .maxLength((long) maxLength)
+                .overflow(overflow());
+        if (ttlMs != null) {
+            builder.ttl(ttlMs.intValue());
+        }
+        return builder.build();
+    }
+
+    /**
+     * DLQ durable con retención: TTL largo (7 días por defecto) y tope de tamaño (drop-head: se descartan los
+     * más antiguos). No tiene DLX: lo que vence aquí se elimina.
+     */
+    private Queue deadLetterQueue(String name) {
+        return QueueBuilder.durable(name)
+                .ttl((int) props.retention().deadLetterTtlMs())
+                .maxLength((long) props.retention().deadLetterMaxLength())
+                .overflow(QueueBuilder.Overflow.dropHead)
+                .build();
+    }
+
+    private QueueBuilder.Overflow overflow() {
+        return switch (props.retention().overflow()) {
+            case "reject-publish" -> QueueBuilder.Overflow.rejectPublish;
+            default -> QueueBuilder.Overflow.dropHead;
+        };
     }
 }

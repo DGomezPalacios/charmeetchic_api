@@ -80,6 +80,6 @@ class AfterCommitRabbitSenderTest {
 
     private AfterCommitRabbitSender sender(boolean enabled) {
         return new AfterCommitRabbitSender(rabbitTemplate, new MessagingProperties(enabled,
-                new MessagingProperties.Retry(3, 0), new MessagingProperties.Demo(false), null, null));
+                new MessagingProperties.Retry(3, 0), new MessagingProperties.Rpc(3000), new MessagingProperties.Demo(false), null, null, null));
     }
 }

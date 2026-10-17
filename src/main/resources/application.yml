@@ -78,14 +78,17 @@ app:
     low-stock-threshold: ${LOW_STOCK_THRESHOLD:5}
   # -------------------------------------------------------------------------
   # Mensajería (RabbitMQ): ÚNICO lugar donde se definen los nombres de exchanges, colas y routing
-  # keys. RabbitMQConfig (paquete messaging.config) los lee vía MessagingProperties y declara los
-  # beans; ninguna otra clase escribe estos nombres "a mano".
+  # keys, y sus políticas de retención. RabbitMQConfig (paquete messaging.config) los lee vía
+  # MessagingProperties y declara los beans; ninguna otra clase escribe estos nombres "a mano".
   #
-  #   Exchange                      Tipo    Routing key / patrón        Cola
-  #   charmeetchic.inventario       direct  inventario.stock-bajo   ->  inventario.stock-bajo
-  #   charmeetchic.inventario       direct  inventario.movimientos  ->  inventario.movimientos
-  #   charmeetchic.notificaciones   topic   notificacion.reporte.*  ->  notificaciones.reportes
-  #   charmeetchic.dlx              direct  <nombre de la DLQ>      ->  <cola>.dlq  (mensajes fallidos)
+  #   Exchange                     Tipo    Routing key / patrón          Cola                       Patrón
+  #   charmeetchic.inventario      direct  inventario.stock-bajo     ->  inventario.stock-bajo      asíncrono
+  #   charmeetchic.inventario      direct  inventario.movimientos    ->  inventario.movimientos     asíncrono
+  #   charmeetchic.inventario      direct  inventario.consulta-stock ->  inventario.consulta-stock  SÍNCRONO (RPC)
+  #   charmeetchic.notificaciones  topic   notificacion.reporte.*    ->  notificaciones.reportes    asíncrono
+  #   charmeetchic.ventas          fanout  (se ignora)               ->  ventas.auditoria           pub/sub
+  #                                                                  ->  ventas.metricas            pub/sub
+  #   charmeetchic.dlx             direct  <nombre de la DLQ>        ->  <cola>.dlq  (mensajes fallidos)
   # -------------------------------------------------------------------------
   messaging:
     # Interruptor general. false = no se publican mensajes ni se intenta conectar al arrancar
@@ -97,25 +100,47 @@ app:
       max-attempts: ${RABBITMQ_RETRY_MAX_ATTEMPTS:3}
       # Espera antes de cada reintento = backoff-ms * número de intento (1 s, 2 s, ...).
       backoff-ms: ${RABBITMQ_RETRY_BACKOFF_MS:1000}
+    rpc:
+      # Tiempo máximo que GET /inventory/stock-check/{sku} espera la respuesta. Si no llega -> 504.
+      # También es el TTL de la cola de consultas: una consulta que nadie respondió a tiempo ya no sirve.
+      timeout-ms: ${RABBITMQ_RPC_TIMEOUT_MS:3000}
     demo:
       # Permite que POST /reports/inventory/async reciba "simularError" para mostrar reintentos y DLQ.
       simulated-failures-enabled: ${MESSAGING_SIMULATED_FAILURES:true}
+    retention:
+      # Qué hace una cola principal cuando llega a su max-length:
+      #   drop-head      -> descarta el mensaje MÁS ANTIGUO. Como las colas tienen DLX, ese mensaje no se
+      #                     pierde en silencio: va a la DLQ con motivo "maxlen". [ELEGIDO]
+      #   reject-publish -> rechaza el mensaje NUEVO; solo se entera un productor con "publisher confirms"
+      #                     (no los usamos), así que el evento se perdería sin dejar rastro.
+      overflow: drop-head
+      # DLQ: se guardan 7 días y como máximo 10000 mensajes, para que no crezcan sin límite.
+      # (No tienen DLX: lo que vence o se descarta de una DLQ se elimina.)
+      dead-letter-ttl-ms: 604800000
+      dead-letter-max-length: 10000
     exchanges:
       # direct: entrega a la cola cuya binding key es IGUAL a la routing key del mensaje.
       inventario: charmeetchic.inventario
       # topic: entrega según patrones con comodines (* = una palabra, # = cero o más palabras).
       notificaciones: charmeetchic.notificaciones
-      # Dead Letter Exchange: recibe los mensajes rechazados (NACK sin reencolar) de las 3 colas.
+      # fanout: entrega una COPIA a TODAS las colas unidas (publish/subscribe); ignora la routing key.
+      ventas: charmeetchic.ventas
+      # Dead Letter Exchange: recibe los mensajes rechazados (NACK sin reencolar), vencidos o descartados.
       dead-letter: charmeetchic.dlx
     queues:
       stock-bajo:
         name: inventario.stock-bajo
         routing-key: inventario.stock-bajo
         dead-letter-queue: inventario.stock-bajo.dlq
+        max-length: 1000
+        # Una alerta de reposición sin atender en 24 h se vence y pasa a la DLQ (queda registrada allí).
+        message-ttl-ms: 86400000
       movimientos:
         name: inventario.movimientos
         routing-key: inventario.movimientos
         dead-letter-queue: inventario.movimientos.dlq
+        # Auditoría: SIN TTL, un movimiento nunca debe vencer. Solo límite de tamaño.
+        max-length: 10000
       reportes:
         name: notificaciones.reportes
         # En un exchange topic la binding key es un PATRÓN. El productor publica con una routing
@@ -125,6 +150,23 @@ app:
         # En las colas direct no hace falta: se publica con la misma routing-key.
         publish-routing-key: notificacion.reporte.inventario
         dead-letter-queue: notificaciones.reportes.dlq
+        max-length: 500
+      consulta-stock:
+        # Cola de peticiones RPC. Sin DLQ: si la consulta vence (TTL = rpc.timeout-ms) el cliente ya
+        # respondió 504 y nadie espera la respuesta; guardarla en una DLQ solo acumularía basura.
+        name: inventario.consulta-stock
+        routing-key: inventario.consulta-stock
+        max-length: 1000
+      ventas-auditoria:
+        # Suscriptor 1 del fanout: registra cada venta.
+        name: ventas.auditoria
+        dead-letter-queue: ventas.auditoria.dlq
+        max-length: 10000
+      ventas-metricas:
+        # Suscriptor 2 del fanout: actualiza el resumen de ventas.
+        name: ventas.metricas
+        dead-letter-queue: ventas.metricas.dlq
+        max-length: 10000
   jwt:
     # firebase -> valida ID tokens de Firebase Authentication (RS256, claves públicas de Google vía JWKS)
     #             [DEFAULT / producción]
