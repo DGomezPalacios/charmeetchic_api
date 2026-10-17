@@ -1,0 +1,6 @@
+# Scripts y configuraciones que se ejecutan o montan en Linux (VM y contenedores): siempre con fin de
+# línea LF, aunque se editen en Windows. Un "\r" al final de línea rompe bash y los .conf de RabbitMQ.
+*.sh        text eol=lf
+*.conf      text eol=lf
+Caddyfile   text eol=lf
+.env.example text eol=lf

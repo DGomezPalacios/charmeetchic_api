@@ -1,0 +1,198 @@
+# =============================================================================
+# PRODUCCIÓN: todo el sistema en UNA VM (Azure B2s, 4 GB RAM).
+#
+#   cp .env.example .env    # o: ./deploy/generar-env.sh <dominio> <origen-del-front>
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+#   Internet ──443/80──► caddy ──► gateway:8000 ──┬─► backend:8080 ──► postgres:5432
+#                       (HTTPS)   (valida JWT,    │        │
+#                                  CORS, rutas)   │        └──────────► rabbitmq1 ◄═cluster═► rabbitmq2
+#                                                 └─► rabbit-admin:8081 ─┘
+#
+# Solo Caddy publica puertos (80/443). La consola de RabbitMQ (15672) se publica aparte para la demo:
+# restringirla a TU IP en el NSG de Azure. Postgres, AMQP (5672) y los servicios Java NO son accesibles
+# desde Internet: solo dentro de la red interna de Docker.
+#
+# Todas las credenciales salen del archivo .env (NO versionado). Las variables marcadas con :? son
+# obligatorias: si faltan, `docker compose` se niega a arrancar y dice cuál falta.
+#
+# Memoria (mem_limit): 512+512+384+768+384+384+128 = 3072 MiB, deja ~900 MiB al sistema operativo.
+# Las JVM llevan -Xmx menor que su mem_limit: el resto es memoria fuera del heap (metaspace, hilos, Netty).
+# =============================================================================
+name: charmeetchic-prod
+
+x-defaults: &defaults
+  restart: unless-stopped          # vuelve a levantar si se cae o si la VM se reinicia
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"              # que los logs no llenen el disco de la VM
+      max-file: "3"
+
+# Ambos nodos usan la misma imagen, configuración y cookie; solo cambia el hostname (= nombre del nodo).
+x-rabbitmq: &rabbitmq
+  <<: *defaults
+  image: rabbitmq:4.1-management
+  # La Erlang cookie es el "secreto compartido" del clúster: nodos con distinta cookie no se pueden unir.
+  # Se escribe en el archivo que lee RabbitMQ antes de arrancar el servidor ($$ = $ literal para el shell).
+  entrypoint:
+    - /bin/bash
+    - -c
+    - >-
+      printf '%s' "$$RABBITMQ_COOKIE" > /var/lib/rabbitmq/.erlang.cookie &&
+      chmod 600 /var/lib/rabbitmq/.erlang.cookie &&
+      chown rabbitmq:rabbitmq /var/lib/rabbitmq/.erlang.cookie &&
+      exec docker-entrypoint.sh rabbitmq-server
+  environment:
+    RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:?Falta RABBITMQ_USERNAME en .env}
+    RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Falta RABBITMQ_PASSWORD en .env}
+    RABBITMQ_COOKIE: ${RABBITMQ_ERLANG_COOKIE:?Falta RABBITMQ_ERLANG_COOKIE en .env}
+  mem_limit: 512m
+  healthcheck:
+    test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
+    interval: 10s
+    timeout: 10s
+    retries: 12
+    start_period: 30s
+
+services:
+  # ---------------------------------------------------------------- RabbitMQ: clúster de 2 nodos
+  rabbitmq1:
+    <<: *rabbitmq
+    hostname: rabbitmq1                        # nodo rabbit@rabbitmq1
+    volumes:
+      - rabbitmq1-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-charmeetchic.conf:ro
+    ports:
+      - "${RABBITMQ_CONSOLE_PORT:-15672}:15672"   # consola web (solo para la demo; NSG restringido a tu IP)
+
+  rabbitmq2:
+    <<: *rabbitmq
+    hostname: rabbitmq2                        # nodo rabbit@rabbitmq2
+    volumes:
+      - rabbitmq2-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-charmeetchic.conf:ro
+      - ./deploy/rabbitmq/cluster-join.conf:/etc/rabbitmq/conf.d/30-cluster-join.conf:ro   # se une al nodo 1
+    depends_on:
+      rabbitmq1:
+        condition: service_healthy             # el 2 arranca cuando el 1 ya está listo, y se une a él
+
+  # ---------------------------------------------------------------- Base de datos
+  postgres:
+    <<: *defaults
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-charmeetchic}
+      POSTGRES_USER: ${POSTGRES_USER:-charmeetchic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------- API de inventario
+  backend:
+    <<: *defaults
+    build: .
+    image: charmeetchic-api:latest
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-charmeetchic}
+      DB_USERNAME: ${POSTGRES_USER:-charmeetchic}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Los dos nodos: si el 1 no responde al conectar, Spring AMQP prueba con el 2.
+      RABBITMQ_ADDRESSES: rabbitmq1:5672,rabbitmq2:5672
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-charme-et-chic}
+      MESSAGING_SIMULATED_FAILURES: ${MESSAGING_SIMULATED_FAILURES:-true}   # activo: se usa en la demo
+      JAVA_OPTS: -Xmx448m -Xss512k -XX:MaxMetaspaceSize=160m -XX:+UseSerialGC
+    mem_limit: 768m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq1:
+        condition: service_healthy
+      rabbitmq2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s           # la B2s es lenta para arrancar Spring + Hibernate
+
+  # ---------------------------------------------------------------- Administrador de RabbitMQ
+  rabbit-admin:
+    <<: *defaults
+    build: ./rabbit-admin
+    image: charmeetchic-rabbit-admin:latest
+    environment:
+      RABBITMQ_ADDRESSES: rabbitmq1:5672,rabbitmq2:5672
+      RABBITMQ_MANAGEMENT_URL: http://rabbitmq1:15672
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-charme-et-chic}
+      JAVA_OPTS: -Xmx224m -Xss512k -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC
+    mem_limit: 384m
+    depends_on:
+      rabbitmq1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  # ---------------------------------------------------------------- API Gateway
+  gateway:
+    <<: *defaults
+    build: ./gateway
+    image: charmeetchic-gateway:latest
+    environment:
+      BACKEND_URL: http://backend:8080
+      RABBIT_ADMIN_URL: http://rabbit-admin:8081
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-charme-et-chic}
+      CORS_ALLOWED_ORIGINS: ${FRONTEND_ORIGIN:?Falta FRONTEND_ORIGIN en .env},http://localhost:4200
+      JAVA_OPTS: -Xmx224m -Xss512k -XX:MaxMetaspaceSize=128m -XX:MaxDirectMemorySize=64m -XX:+UseSerialGC
+    mem_limit: 384m
+    depends_on:
+      - backend
+      - rabbit-admin
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+  # ---------------------------------------------------------------- HTTPS (única puerta a Internet)
+  caddy:
+    <<: *defaults
+    image: caddy:2-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?Falta DOMAIN en .env (p. ej. charmeetchic.eastus.cloudapp.azure.com)}
+    ports:
+      - "80:80"        # Let's Encrypt valida el dominio por aquí; luego redirige a HTTPS
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data           # certificados: NO borrar este volumen
+      - caddy-config:/config
+    mem_limit: 128m
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+volumes:
+  rabbitmq1-data:
+  rabbitmq2-data:
+  postgres-data:
+  caddy-data:
+  caddy-config:
