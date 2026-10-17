@@ -6,7 +6,11 @@ import com.charmeetchic.api.dto.ReportDTO.InventoryValue;
 import com.charmeetchic.api.dto.ReportDTO.SalesSummary;
 import com.charmeetchic.api.dto.ReportDTO.TopProduct;
 import com.charmeetchic.api.dto.ReportJobDTO;
+import com.charmeetchic.api.dto.SalesDTO.SaleRecordDTO;
+import com.charmeetchic.api.dto.SalesDTO.SalesMetricsDTO;
 import com.charmeetchic.api.dto.StockMovementDTO;
+import com.charmeetchic.api.service.SalesAuditService;
+import com.charmeetchic.api.service.SalesMetricsService;
 import com.charmeetchic.api.security.AuthenticatedUser;
 import com.charmeetchic.api.service.AsyncReportService;
 import com.charmeetchic.api.service.ReportService;
@@ -50,6 +54,8 @@ public class ReportController {
     private final ReportService reportService;
     private final AsyncReportService asyncReportService;
     private final StockAuditService stockAuditService;
+    private final SalesAuditService salesAuditService;
+    private final SalesMetricsService salesMetricsService;
 
     /** GET /api/reports/sales?from=2026-01-01&to=2026-01-31 */
     @GetMapping("/sales")
@@ -101,6 +107,19 @@ public class ReportController {
             @RequestParam(required = false) Long productId,
             @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable) {
         return ResponseEntity.ok(stockAuditService.getMovements(productId, pageable));
+    }
+
+    /** GET /api/reports/sales-audit — ventas registradas por el suscriptor ventas.auditoria (fanout). */
+    @GetMapping("/sales-audit")
+    public ResponseEntity<Page<SaleRecordDTO>> getSalesAudit(
+            @PageableDefault(size = 20, sort = "recordedAt", direction = Sort.Direction.DESC) Pageable pageable) {
+        return ResponseEntity.ok(salesAuditService.getRecords(pageable));
+    }
+
+    /** GET /api/reports/sales-metrics — resumen que mantiene el suscriptor ventas.metricas (fanout). */
+    @GetMapping("/sales-metrics")
+    public ResponseEntity<SalesMetricsDTO> getSalesMetrics() {
+        return ResponseEntity.ok(salesMetricsService.snapshot());
     }
 
     /** GET /api/reports/top-products?from=&to=&limit=10 */

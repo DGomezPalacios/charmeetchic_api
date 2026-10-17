@@ -13,6 +13,7 @@ import com.charmeetchic.api.exception.InsufficientStockException;
 import com.charmeetchic.api.exception.ResourceNotFoundException;
 import com.charmeetchic.api.exception.ValidationException;
 import com.charmeetchic.api.repository.OrderRepository;
+import com.charmeetchic.api.messaging.producer.SalesEventPublisher;
 import com.charmeetchic.api.repository.ProductRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -45,13 +47,15 @@ class OrderServiceTest {
     private ProductRepository productRepository;
     @Mock
     private StockEventService stockEventService;
+    @Mock
+    private SalesEventPublisher salesEventPublisher;
 
     private OrderService service;
     private Category category;
 
     @BeforeEach
     void setUp() {
-        service = new OrderService(orderRepository, productRepository, stockEventService, new BigDecimal("0.19"));
+        service = new OrderService(orderRepository, productRepository, stockEventService, salesEventPublisher, new BigDecimal("0.19"));
         category = Category.builder().id(1L).name("Collares").build();
     }
 
@@ -231,6 +235,8 @@ class OrderServiceTest {
         service.createOrder(USER, "Calle 1", List.of(new CartItemDTO(1L, 4)));
 
         verify(stockEventService).stockChanged(product, 10, MovementType.VENTA, "orden #55");
+        verify(salesEventPublisher).publishSale(argThat(sale -> sale.orderId() == 55L && sale.units() == 4
+                && sale.lines() == 1 && sale.userId().equals(USER)));
     }
 
     @Test
@@ -241,6 +247,7 @@ class OrderServiceTest {
                 .isInstanceOf(InsufficientStockException.class);
 
         verify(stockEventService, never()).stockChanged(any(), anyInt(), any(), any());
+        verify(salesEventPublisher, never()).publishSale(any());
     }
 
     @Test

@@ -11,6 +11,8 @@ import com.charmeetchic.api.exception.ConflictException;
 import com.charmeetchic.api.exception.InsufficientStockException;
 import com.charmeetchic.api.exception.ResourceNotFoundException;
 import com.charmeetchic.api.exception.ValidationException;
+import com.charmeetchic.api.messaging.event.SaleCompletedEvent;
+import com.charmeetchic.api.messaging.producer.SalesEventPublisher;
 import com.charmeetchic.api.repository.OrderRepository;
 import com.charmeetchic.api.repository.ProductRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -22,11 +24,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Lógica de órdenes de compra.
@@ -53,15 +57,18 @@ public class OrderService {
     private final OrderRepository orderRepository;
     private final ProductRepository productRepository;
     private final StockEventService stockEventService;
+    private final SalesEventPublisher salesEventPublisher;
     private final BigDecimal taxRate;
 
     public OrderService(OrderRepository orderRepository,
                         ProductRepository productRepository,
                         StockEventService stockEventService,
+                        SalesEventPublisher salesEventPublisher,
                         @Value("${app.order.tax-rate:0.19}") BigDecimal taxRate) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.stockEventService = stockEventService;
+        this.salesEventPublisher = salesEventPublisher;
         this.taxRate = taxRate;
     }
 
@@ -120,6 +127,10 @@ public class OrderService {
         // Con el id de la orden ya asignado: un movimiento de auditoría por producto (y alerta si cruza el umbral).
         stockChanges.forEach(c -> stockEventService.stockChanged(c.product(), c.previousStock(),
                 MovementType.VENTA, "orden #" + saved.getId()));
+        // UN evento de venta al fanout (lo reciben auditoría y métricas). También sale solo tras el commit.
+        salesEventPublisher.publishSale(new SaleCompletedEvent(UUID.randomUUID().toString(), saved.getId(), userId,
+                quantities.size(), quantities.values().stream().mapToInt(Integer::intValue).sum(), saved.getTotal(),
+                Instant.now()));
         log.info("Orden creada: id={}, userId={}, líneas={}, total={}", saved.getId(), userId,
                 saved.getItems().size(), saved.getTotal());
         return OrderDTO.from(saved);
