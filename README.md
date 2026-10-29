@@ -1,5 +1,7 @@
 # charmeetchic-api
 
+[![CI](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DGomezPalacios/charmeetchic_api/actions)
+
 API REST para el **control de inventario** de la tienda de accesorios y joyas **Charme et Chic**, diseñada para
 crecer hacia un ecommerce (carrito, checkout, pagos).
 
@@ -8,6 +10,18 @@ crecer hacia un ecommerce (carrito, checkout, pagos).
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
 - **URL base:** `http://localhost:8080/api`
+
+---
+
+## DevOps
+
+Proyecto **individual**: el desarrollo, la revisión de los PR y la gestión del repositorio los realiza una sola persona,
+siguiendo GitFlow con PR obligatorios y CI en GitHub Actions.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): modelo de ramas, naming, convención de commits, flujo de merge, versionado,
+  estrategia de revisión y estructura de carpetas.
+- [docs/workflow.md](docs/workflow.md): diagramas del flujo GitFlow y del pipeline de CI, y cuándo se ejecuta el
+  workflow.
 
 ---
 
@@ -477,3 +491,21 @@ La API está pensada para separarse por dominios sin reescribir la seguridad:
 - Verificar que `FIREBASE_PROJECT_ID` (por defecto `charme-et-chic`) coincide con el Project ID del proyecto de Firebase usado por el frontend.
 - Servir la API solo por HTTPS y ajustar `CORS_ALLOWED_ORIGINS` al dominio real del frontend.
 - Restringir `logging.level.com.charmeetchic` a `INFO`.
+
+---
+
+## Justificación del modelo de ramificación
+
+<!-- A completar por la autora -->
+
+## Conclusiones
+
+<!-- A completar por la autora -->
+
+## Reflexión personal
+
+<!-- A completar por la autora -->
+
+## Declaración de uso de IA
+
+<!-- A completar por la autora -->
