@@ -1,6 +1,6 @@
 # charmeetchic-api
 
-[![CI](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DGomezPalacios/charmeetchic_api/actions)
+[![CI](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml)
 
 API REST para el **control de inventario** de la tienda de accesorios y joyas **Charme et Chic**, diseñada para
 crecer hacia un ecommerce (carrito, checkout, pagos).
