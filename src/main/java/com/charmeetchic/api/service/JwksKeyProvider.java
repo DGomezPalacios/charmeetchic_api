@@ -5,6 +5,7 @@ import com.charmeetchic.api.exception.InvalidJwtException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -17,6 +18,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.PublicKey;
 import java.security.spec.RSAPublicKeySpec;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -42,14 +44,22 @@ public class JwksKeyProvider {
 
     private final JwtConfig config;
     private final ObjectMapper objectMapper;
+    private final Clock clock;
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
     private volatile Map<String, PublicKey> keysByKid = Map.of();
     private volatile Instant lastRefresh = Instant.EPOCH;
 
+    @Autowired
     public JwksKeyProvider(JwtConfig config, ObjectMapper objectMapper) {
+        this(config, objectMapper, Clock.systemUTC());
+    }
+
+    /** Permite a las pruebas controlar el tiempo (intervalo mínimo entre recargas) sin depender del reloj real. */
+    JwksKeyProvider(JwtConfig config, ObjectMapper objectMapper, Clock clock) {
         this.config = config;
         this.objectMapper = objectMapper;
+        this.clock = clock;
     }
 
     /**
@@ -73,7 +83,7 @@ public class JwksKeyProvider {
     }
 
     private synchronized void refresh() {
-        Instant now = Instant.now();
+        Instant now = clock.instant();
         if (lastRefresh.plusSeconds(config.getJwksMinRefreshSeconds()).isAfter(now)) {
             return; // recarga reciente: se respeta el intervalo mínimo
         }
