@@ -1,0 +1,45 @@
+# Archivos que NO se envían al contexto de build de Docker.
+# El Dockerfile solo necesita pom.xml y src/; todo lo demás se excluye para que el contexto sea
+# pequeño y ningún secreto pueda terminar dentro de una imagen.
+
+# Secretos: variables de entorno y credenciales de Firebase
+.env
+.env*
+*firebase-admin-key*.json
+*-admin-key.json
+*-firebase-adminsdk-*.json
+serviceAccount*.json
+*.pem
+*.key
+
+# Control de versiones y CI
+.git/
+.gitignore
+.github/
+
+# Compilados locales (la imagen compila desde cero en la etapa build)
+target/
+**/target/
+
+# Documentación y colecciones de prueba
+docs/
+*.md
+postman/
+
+# Scripts de Node que no usa la API (alta de administradores)
+addAdmin.js
+package.json
+package-lock.json
+node_modules/
+
+# IDE, herramientas locales y sistema operativo
+.idea/
+.vscode/
+.claude/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Archivos de Docker (no forman parte del build)
+Dockerfile
+.dockerignore

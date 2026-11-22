@@ -74,6 +74,7 @@ tipo(scope): descripción
 | `auth` | Autenticación y autorización con Firebase (JWT, roles). |
 | `config` | Configuración de Spring (`application.yml`, CORS, seguridad). |
 | `readme` | Documentación en `README.md`. |
+| `docker` | Contenerización: `Dockerfile`, `.dockerignore` y el job `docker-build` del CI. |
 
 ### Ejemplos reales (`git log`)
 
