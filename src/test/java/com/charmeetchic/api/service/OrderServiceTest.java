@@ -174,6 +174,16 @@ class OrderServiceTest {
     }
 
     @Test
+    void updateOrderStatus_unknownOrder_throwsNotFound() {
+        when(orderRepository.findById(404L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.updateOrderStatus(404L, OrderStatus.PROCESSING))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
     void updateOrderStatus_skippingSteps_throwsValidation() {
         when(orderRepository.findById(1L)).thenReturn(Optional.of(order(1L, USER, OrderStatus.PENDING, 1)));
 
