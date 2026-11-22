@@ -505,31 +505,38 @@ Asumo completamente los costos de haber elegido GitFlow: implicó gestionar más
 ## Conclusiones
 
 Al temrinnar el desarrollo y la configuración del repositorio charmeetchic-api, se cumple con los requerimientos técnicos y metodológicos del encargo. Implementé una estrategia de control de versiones basada en GitFlow con separación estricta entre las ramas permanentes main y develop, apoyada por ramas temporales (feature/*, hotfix/* y docs/*) y lanzamientos mediante Pull Requests directos desde develop hacia main. Además, se aplicó versionado semántico (v1.0.0, v1.0.1 y v1.1.0), commit explicativos, reglas de protección de ramas en GitHub y un flujo de Integración Continua (CI) automatizado con GitHub Actions para validar cada cambio antes de integrarlo.
-El pipeline de CI junto con la dinámica de Pull Requests aporta un respaldo concreto a la calidad del código, evitando que errores lógicos se integraran en develop. Un ejemplo ocurrió durante la revisión del PR #2, donde el code review permitió advertir que el sistema aceptaba precios negativos en los productos; tras incorporar la validación correspondiente, el workflow de GitHub Actions (mvn -B verify y el smoke test sobre /api/health) ejecutó automáticamente las pruebas unitarias y de integración, confirmando que la corrección funcionaba sin introducir regresiones antes del merge.
-Para futuras evaluaciones y una eventual salida a producción real, mejoraría el pipeline incorporando tres elementos clave:
-1.	Análisis de seguridad automatizado (SAST y escaneo de dependencias): integrar herramientas como OWASP Dependency-Check o Trivy para detectar vulnerabilidades en las librerías de Maven o exposiciones accidentales de credenciales.
-2.	Contenerización: añadir un Dockerfile multi-etapa para empaquetar el .jar y publicar la imagen resultante en un registro como GitHub Container Registry (GHCR).
-3.	Despliegue Continuo (CD): extender el workflow para desplegar automáticamente la rama develop en un entorno de Staging en la nube conectado a una base de datos persistente (PostgreSQL), reemplazando la base H2 en memoria utilizada en desarrollo.
 
+El pipeline de CI junto con la dinámica de Pull Requests aporta un respaldo concreto a la calidad del código, evitando que errores lógicos se integraran en develop. Un ejemplo ocurrió durante la revisión del PR #2, donde el code review permitió advertir que el sistema aceptaba precios negativos en los productos; tras incorporar la validación correspondiente, el workflow de GitHub Actions (mvn -B verify y el smoke test sobre /api/health) ejecutó automáticamente las pruebas unitarias y de integración, confirmando que la corrección funcionaba sin introducir regresiones antes del merge.
+
+Para futuras evaluaciones y una eventual salida a producción real, mejoraría el pipeline incorporando tres elementos clave:
+
+1. Análisis de seguridad automatizado (SAST y escaneo de dependencias): integrar herramientas como OWASP Dependency-Check o Trivy para detectar vulnerabilidades en las librerías de Maven o exposiciones accidentales de credenciales.
+2. Contenerización: añadir un Dockerfile multi-etapa para empaquetar el .jar y publicar la imagen resultante en un registro como GitHub Container Registry (GHCR).
+3. Despliegue Continuo (CD): extender el workflow para desplegar automáticamente la rama develop en un entorno de Staging en la nube conectado a una base de datos persistente (PostgreSQL), reemplazando la base H2 en memoria utilizada en desarrollo.
 
 ## Reflexión personal
 
 DUrante el proceso aprendí a configurar flujos declarativos en YAML para GitHub Actions, a vincular etiquetas (tags) con lanzamientos formales y a comprender cómo las reglas de protección de ramas funcionan como barreras de calidad entre el entorno de desarrollo y el código productivo.
+
 Lo que más me costó fueron los detalles operativos del flujo estricto en GitHub. En la práctica me enfrenté a situaciones reales como olvidar etiquetar una versión, dejar una revisión de código en estado Pending en el PR #4 (lo que no bloqueó el merge, pero dejaba mis comentarios invisibles para terceros y sin respaldo como evidencia formal hasta enviarlos) y tener que ajustar las reglas de protección de ramas para trabajar de forma individual, desactivando el requisito de aprobaciones (Require approvals) porque GitHub no permite autoaprobar los propios Pull Requests. Resolver estos detalles me obligó a entender con exactitud cómo se registra cada acción en el historial del repositorio.
+
 Aunque desarrollé el repositorio sola, simular un flujo colaborativo profesional cambió por completo mi forma de ver el trabajo en equipo. Mantener commits descriptivos, documentar con precisión la arquitectura en el README.md y ejecutar revisiones formales en mis propios Pull Requests me demostró que estas prácticas no son burocracia innecesaria: constituyen un lenguaje común que permite que cualquier desarrollador pueda revisar, mantener o escalar el proyecto en la nube sin depender de explicaciones verbales.
 
 ## Declaración de uso de IA
 
 En el desarrollo de este proyecto se utilizaron herramientas de inteligencia artificial generativa como apoyo técnico y metodológico, manteniendo en todo momento la supervisión, validación y toma de decisiones sobre el repositorio y el informe:
-•	Herramientas utilizadas: 
-Claude (como guía conceptual, apoyo en la revisión crítica de Pull Requests y estructuración del informe) y Claude Code (como asistente de programación en entorno local para la generación de código base, pruebas, configuración del workflow ci.yml y documentación técnica).
-Gemini para ayudar a corregir redacción y contrastar la exactitud téncica y cumplimiento de la rúbrica, revisión de mi conclusión y reflexión, señaló errores que fueron revisados y corregidos sin reescribir, si no que fueron corregidos por mí.
-•	Distribución de tareas (IA vs. autoría propia):
-o	Apoyo de la IA: se utilizó para acelerar la escritura de código repetitivo en Spring Boot, estructurar casos de prueba, generar el borrador de la plantilla en Word del informe, redactar la descripción del PR #4 y señalar observaciones durante las revisiones de código (como la falta de validación para precios negativos en el PR #2, la desalineación del FIREBASE_PROJECT_ID entre el README.md y application.yml que originó el hotfix, y la observación de versionado semántico en el PR #4).
-o	Trabajo y decisiones propias: evalué cada hallazgo técnico, decidí publicar los comentarios de revisión, solicité y audité las correcciones en el código, redacté mis respuestas en los Pull Requests, tomé la decisión de mantener la versión v1.1.0, elaboré la justificación arquitectónica de GitFlow, las conclusiones y la reflexión personal, y ejecuté íntegramente el flujo de ramas, merges y tags en Git y GitHub.
-•	Validación de resultados: Todo el código, pruebas y configuraciones generados con asistencia de IA fueron verificados mediante la revisión de los git diff, la ejecución local de mvn test y mvn -B verify, la comprobación de los logs de ejecución en GitHub Actions y el contraste directo contra los archivos fuente del proyecto (application.yml, OrderService, Product, HealthController, ProductService y README.md).
-•	Trazabilidad en el historial: Siguiendo buenas prácticas de transparencia, los commits en los que participó la IA fueron identificados explícitamente en el historial de Git mediante la etiqueta Co-Authored-By.
-Referencias (formato Bibliotecas Duoc UC / APA 7.ª edición):
-•	Anthropic. (2026). Claude (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://claude.ai
-•	Anthropic. (2026). Claude Code (versión consultada en noviembre de 2026) [Herramienta de asistencia de programación con IA]. https://claude.com/claude-code
 
+- **Herramientas utilizadas:**
+  - Claude (como guía conceptual, apoyo en la revisión crítica de Pull Requests y estructuración del informe) y Claude Code (como asistente de programación en entorno local para la generación de código base, pruebas, configuración del workflow ci.yml y documentación técnica).
+  - Gemini para ayudar a corregir redacción y contrastar la exactitud téncica y cumplimiento de la rúbrica, revisión de mi conclusión y reflexión, señaló errores que fueron revisados y corregidos sin reescribir, si no que fueron corregidos por mí.
+- **Distribución de tareas (IA vs. autoría propia):**
+  - Apoyo de la IA: se utilizó para acelerar la escritura de código repetitivo en Spring Boot, estructurar casos de prueba, generar el borrador de la plantilla en Word del informe, redactar la descripción del PR #4 y señalar observaciones durante las revisiones de código (como la falta de validación para precios negativos en el PR #2, la desalineación del FIREBASE_PROJECT_ID entre el README.md y application.yml que originó el hotfix, y la observación de versionado semántico en el PR #4).
+  - Trabajo y decisiones propias: evalué cada hallazgo técnico, decidí publicar los comentarios de revisión, solicité y audité las correcciones en el código, redacté mis respuestas en los Pull Requests, tomé la decisión de mantener la versión v1.1.0, elaboré la justificación arquitectónica de GitFlow, las conclusiones y la reflexión personal, y ejecuté íntegramente el flujo de ramas, merges y tags en Git y GitHub.
+- **Validación de resultados:** Todo el código, pruebas y configuraciones generados con asistencia de IA fueron verificados mediante la revisión de los git diff, la ejecución local de mvn test y mvn -B verify, la comprobación de los logs de ejecución en GitHub Actions y el contraste directo contra los archivos fuente del proyecto (application.yml, OrderService, Product, HealthController, ProductService y README.md).
+- **Trazabilidad en el historial:** Siguiendo buenas prácticas de transparencia, los commits en los que participó la IA fueron identificados explícitamente en el historial de Git mediante la etiqueta Co-Authored-By.
+
+### Referencias (formato Bibliotecas Duoc UC / APA 7.ª edición)
+
+- Anthropic. (2026). *Claude* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://claude.ai
+- Anthropic. (2026). *Claude Code* (versión consultada en noviembre de 2026) [Herramienta de asistencia de programación con IA]. https://claude.com/claude-code
+- Google. (2026). *Gemini* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://gemini.google.com
