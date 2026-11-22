@@ -41,7 +41,7 @@ java -jar target/charmeetchic-api-0.0.1-SNAPSHOT.jar
 
 > **Antes de usar los endpoints protegidos** configura tu Project ID de Firebase (ver
 > [Configurar Firebase](#configurar-firebase-authentication)). Sin él la aplicación arranca igual con el valor por
-> defecto `charmeetchic`, que solo aceptará tokens de un proyecto con ese ID. Los endpoints públicos (catálogo,
+> defecto `charme-et-chic`, que solo aceptará tokens de un proyecto con ese ID. Los endpoints públicos (catálogo,
 > categorías, health) funcionan siempre. Para probar sin un proyecto de Firebase, ver
 > [Probar sin Firebase](#probar-sin-firebase-modo-local).
 
