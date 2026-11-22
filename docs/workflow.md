@@ -71,20 +71,26 @@ flowchart TD
     A["Evento: push a develop / PR hacia develop o main"] --> B["Runner ubuntu-latest"]
     B --> C["Checkout del código"]
     C --> D["Configurar JDK 17 (Temurin + cache Maven)"]
-    D --> E["mvn -B verify<br/>compilación + tests + JAR"]
-    E -->|falla| X["Check build-and-test en rojo"]
-    E -->|ok| F["Smoke test: java -jar + curl /api/health"]
+    D --> E["mvn -B test<br/>compilación + pruebas unitarias"]
+    E -->|falla| X["Check en rojo"]
+    E -->|ok| E2["mvn -B verify -DskipUTs=true<br/>integración + JAR + cobertura JaCoCo"]
+    E2 -->|"falla o cobertura bajo umbral"| X
+    E2 -->|ok| F["Smoke test: java -jar + curl /api/health"]
     F -->|falla| X
-    F -->|ok| G["Subir artefactos<br/>surefire-reports + JAR"]
-    G --> H["Check build-and-test en verde"]
-    H --> I{"¿Check requerido OK<br/>y conversaciones resueltas?"}
+    F -->|ok| G["Job Summary + artefactos<br/>reportes-tests, reporte-cobertura, JAR"]
+    G --> H["build-and-test en verde"]
+    H --> D1["Job docker-build<br/>build de la imagen + contenedor healthy"]
+    D1 -->|falla| X
+    D1 -->|ok| H2["Checks en verde"]
+    H2 --> I{"¿Checks requeridos OK<br/>y conversaciones resueltas?"}
     I -->|sí| J["Merge permitido"]
     I -->|no| K["Merge bloqueado"]
     X --> K
 ```
 
-> Los reportes de tests (`surefire-reports`) se suben siempre (`if: always()`), incluso si el job falló, para poder
-> diagnosticar el error.
+> El resumen y los reportes (`reportes-tests`, `reporte-cobertura`) se publican siempre (`if: always()`), incluso si
+> el job falló, para poder diagnosticar el error. La política de umbrales está en
+> [CONTRIBUTING.md](../CONTRIBUTING.md#política-de-calidad).
 
 ---
 
@@ -101,16 +107,23 @@ flowchart TD
 
 ## Steps de `.github/workflows/ci.yml`
 
-El workflow tiene un único job, `build-and-test`, que corre en `ubuntu-latest`:
+El workflow tiene dos jobs que corren en `ubuntu-latest`. Job `build-and-test`:
 
 1. **Checkout del código** (`actions/checkout@v4`): descarga el repositorio en el runner.
 2. **Configurar JDK 17** (`actions/setup-java@v4`): instala Temurin 17 y activa el cache de dependencias Maven para
    acelerar las siguientes ejecuciones.
-3. **Compilar y ejecutar tests** (`mvn -B verify`): compila, ejecuta los tests unitarios y de integración y empaqueta
-   el JAR. Si algún test falla, el job falla.
-4. **Smoke test del JAR**: levanta el JAR generado en segundo plano y consulta `GET /api/health` hasta 30 veces (cada
+3. **Pruebas unitarias** (`mvn -B test`): compila y ejecuta solo las pruebas unitarias (surefire).
+4. **Pruebas de integración y verificación de cobertura** (`mvn -B verify -DskipUTs=true`): ejecuta las pruebas
+   `*IntegrationTest` (failsafe), empaqueta el JAR, genera el reporte de JaCoCo (unitarias + integración) y aplica
+   los umbrales de cobertura. No recompila ni repite las unitarias.
+5. **Smoke test del JAR**: levanta el JAR generado en segundo plano y consulta `GET /api/health` hasta 30 veces (cada
    2 segundos). Si la aplicación no responde, el job falla; así se verifica que el artefacto realmente arranca.
-5. **Subir reportes de tests** (`actions/upload-artifact@v4`, `if: always()`): publica `target/surefire-reports/`
-   como artefacto `surefire-reports`, aunque los pasos anteriores hayan fallado.
-6. **Subir JAR generado** (`actions/upload-artifact@v4`): publica el JAR como artefacto `charmeetchic-api-jar`,
+6. **Publicar resumen de tests y cobertura** (`if: always()`): script bash + awk que escribe en el *Job Summary* los
+   tests por tipo y la cobertura de líneas y ramas.
+7. **Subir reportes** (`actions/upload-artifact@v4`, `if: always()`): `reportes-tests` (surefire + failsafe) y
+   `reporte-cobertura` (HTML de JaCoCo), aunque los pasos anteriores hayan fallado.
+8. **Subir JAR generado** (`actions/upload-artifact@v4`): publica el JAR como artefacto `charmeetchic-api-jar`,
    descargable desde la ejecución en la pestaña *Actions*.
+
+Job `docker-build` (`needs: build-and-test`): construye la imagen con Buildx (sin publicarla), levanta el contenedor,
+espera el estado `healthy` y consulta `/api/health`.

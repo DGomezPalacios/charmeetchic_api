@@ -62,6 +62,7 @@ tipo(scope): descripción
 | `docs` | Solo documentación (README, guías, comentarios de documentación). |
 | `test` | Agregar o corregir tests, sin cambiar código de producción. |
 | `ci` | Cambios en el pipeline de integración continua (`.github/workflows`). |
+| `build` | Cambios en el sistema de build (`pom.xml`: plugins de Maven, ejecución de pruebas, cobertura). |
 | `chore` | Tareas de mantenimiento que no afectan el código de la aplicación (dependencias, configuración del repo). |
 | `refactor` | Cambio de código que no agrega funcionalidad ni corrige errores. |
 
@@ -75,6 +76,10 @@ tipo(scope): descripción
 | `config` | Configuración de Spring (`application.yml`, CORS, seguridad). |
 | `readme` | Documentación en `README.md`. |
 | `docker` | Contenerización: `Dockerfile`, `.dockerignore` y el job `docker-build` del CI. |
+| `tests` | Configuración de las pruebas y la cobertura (surefire, failsafe, JaCoCo). Se usa con `build` y `ci`. |
+| `orders` | Órdenes de compra: creación, stock, estados y cancelación. |
+| `users` | Sincronización del usuario local con el token de Firebase. |
+| `errors` | Manejo uniforme de errores (`GlobalExceptionHandler`, `ApiError`). |
 
 ### Ejemplos reales (`git log`)
 
@@ -186,6 +191,81 @@ adicional en la misma rama (`fix(products): rechaza precios negativos en la bús
 
 ---
 
+## Política de calidad
+
+### Tipos de pruebas
+
+| Tipo | Archivos | Plugin / fase | Qué prueban |
+|---|---|---|---|
+| Unitarias | Todo `*Test.java` que **no** termine en `IntegrationTest` (`service/*Test`, `filter/*Test`, `exception/*Test`, `HealthControllerTest`) | `maven-surefire-plugin`, fase `test` | Reglas de negocio de cada clase aislada con mocks (Mockito): stock, totales, estados de orden, validación de tokens, formato de errores. Rápidas, sin red. |
+| Integración | `*IntegrationTest.java` (`ApiIntegrationTest`, `FirebaseAuthIntegrationTest`) | `maven-failsafe-plugin`, fases `integration-test` y `verify` | La API completa por HTTP: contexto de Spring, seguridad, roles, H2, serialización JSON y códigos de estado. |
+
+```bash
+mvn -B test     # solo unitarias (feedback rápido mientras se programa)
+mvn -B verify   # unitarias + integración + JAR + reporte y umbrales de cobertura
+```
+
+`HealthControllerTest` levanta el contexto de Spring, pero por convención de nombre corre con las unitarias; es una
+sola prueba rápida.
+
+### Qué se ejecuta en cada step del CI (job `build-and-test`)
+
+| Step | Comando | Si falla |
+|---|---|---|
+| Pruebas unitarias | `mvn -B test` | Se detiene el job: hay una regresión en la lógica. |
+| Pruebas de integración y verificación de cobertura | `mvn -B verify -DskipUTs=true` | Falla si una prueba de integración falla **o** si la cobertura baja de los umbrales. Reutiliza lo compilado y no repite las unitarias. |
+| Smoke test del JAR | `java -jar` + `curl /api/health` | El artefacto no arranca. |
+| Resumen de tests y cobertura | bash + awk sobre los reportes | Siempre se ejecuta: publica en el *Job Summary* los tests por tipo y la cobertura de líneas y ramas. |
+| Subir artefactos | `actions/upload-artifact` | Siempre se ejecuta: `reportes-tests` (surefire + failsafe), `reporte-cobertura` (HTML de JaCoCo) y el JAR. |
+
+Luego el job `docker-build` construye la imagen y verifica que el contenedor quede `healthy`.
+
+### Cobertura y umbrales
+
+La cobertura se mide con **JaCoCo** combinando unitarias e integración (`target/site/jacoco/`: HTML, XML para
+SonarCloud y CSV para el resumen del CI). Se excluyen del cálculo las clases sin lógica propia: la clase main
+`CharmeetchicApiApplication`, los DTOs (records) y las entidades JPA (Lombok + mapeo con anotaciones).
+
+| Regla | Líneas | Ramas | Medido al fijarla |
+|---|---:|---:|---|
+| Todo el proyecto (`BUNDLE`) | 93 % | 82 % | 97,0 % líneas / 86,0 % ramas |
+| Paquete `service` | 95 % | 85 % | 97,3 % líneas / 88,1 % ramas |
+
+Criterio:
+
+- **Unos puntos bajo lo medido** (3–4): es alcanzable y deja margen para código nuevo razonable, pero un retroceso real
+  (por ejemplo, una clase nueva sin pruebas o borrar tests) hace fallar `mvn verify`.
+- **`service` más exigente** porque ahí viven las reglas de negocio que afectan dinero, stock y seguridad (totales e
+  IVA, descuento de stock, transiciones de estado, validación de tokens y claves de Firebase).
+- **Ramas además de líneas**: una línea con un `if` puede estar "cubierta" sin haber probado el camino de error; la
+  cobertura de ramas obliga a probar ambos lados.
+- Los umbrales están en `pom.xml` (`cobertura.*.min`). Se suben cuando la cobertura mejora de forma estable; **no se
+  bajan** para hacer pasar un PR.
+
+### Qué se considera un caso crítico
+
+Un caso es crítico si un error en él puede vender sin stock, cobrar mal, exponer datos o dar acceso indebido. Todo
+cambio que toque estos caminos debe traer su prueba:
+
+- **Errores de validación**: datos de entrada inválidos, rangos de precio o fechas incorrectos, carrito vacío,
+  transiciones de estado no permitidas.
+- **Stock**: stock insuficiente (la orden se rechaza y el stock no cambia) y devolución de stock al cancelar.
+- **Tokens**: token inválido, expirado, falsificado, de otro proyecto o con `kid` desconocido; claves de Google no
+  disponibles (500, no 401); que no se pueda forzar la descarga de claves en cada petición.
+- **Autorización**: acceso sin rol (403), órdenes de otro usuario, revocación del rol ADMIN en Firebase.
+- **Recursos inexistentes**: producto, categoría u orden que no existe (404), sin modificar nada.
+- **Errores internos**: un 500 o un error de base de datos no debe exponer detalles técnicos al cliente.
+
+No se agregan pruebas triviales (getters, records, constructores) solo para subir el porcentaje.
+
+### Un check en rojo bloquea el merge
+
+`build-and-test` y `docker-build` son checks requeridos en la protección de `main` y `develop`. Si una prueba falla,
+la cobertura baja del umbral, el JAR no arranca o la imagen no queda `healthy`, el check queda en rojo y **GitHub no
+permite mergear el PR** hasta corregirlo con un nuevo commit en la misma rama.
+
+---
+
 ## Estructura de carpetas
 
 ```
@@ -214,10 +294,10 @@ charmeetchic_api/
 │   │       ├── application.yml   Configuración de la aplicación (puerto, context-path /api, H2, Firebase)
 │   │       └── data.sql          Datos iniciales del catálogo
 │   └── test/
-│       └── java/com/charmeetchic/api/   Tests unitarios (Mockito) y de integración (MockMvc + H2)
+│       └── java/com/charmeetchic/api/   Unitarias *Test (Mockito, surefire) e integración *IntegrationTest (MockMvc + H2, failsafe)
 ├── CONTRIBUTING.md
 ├── README.md
-└── pom.xml                           Dependencias y build con Maven
+└── pom.xml                           Dependencias, build, separación de pruebas y cobertura (JaCoCo)
 ```
 
 > El modelo de dominio vive en el paquete `entity` (no `model`), y el paquete de enumeraciones se llama `enums`

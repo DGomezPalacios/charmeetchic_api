@@ -30,9 +30,17 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Compila el proyecto, corre los tests unitarios/integración y empaqueta el JAR
-      - name: Compilar y ejecutar tests (mvn verify)
-        run: mvn -B verify
+      # Compila y ejecuta solo las pruebas unitarias (surefire). Falla rápido si hay una regresión de lógica.
+      # El agente de JaCoCo registra la cobertura en target/jacoco.exec.
+      - name: Pruebas unitarias (mvn test)
+        run: mvn -B test
+
+      # Pruebas de integración (failsafe), empaquetado del JAR, reporte de cobertura y política de umbrales.
+      # -DskipUTs=true evita repetir las unitarias; lo compilado se reutiliza ("Nothing to compile") y
+      # JaCoCo agrega (append) la cobertura de integración al mismo jacoco.exec, así el reporte es combinado.
+      # Si la cobertura baja de los umbrales del pom.xml, este step falla.
+      - name: Pruebas de integración y verificación de cobertura (mvn verify)
+        run: mvn -B verify -DskipUTs=true
 
       # Smoke test: levanta el JAR generado en segundo plano y verifica que
       # el endpoint de salud responda, reintentando por si la app tarda en iniciar
@@ -59,13 +67,76 @@ jobs:
             exit 1
           fi
 
-      # Sube el reporte de tests (Surefire) como artefacto, incluso si el job falló
+      # Resumen en la página del job (Job Summary): tests por tipo y cobertura de líneas/ramas.
+      # Solo bash + awk (vienen en el runner): sin actions de terceros ni dependencias externas.
+      # Corre siempre, para que el resumen también explique un job en rojo.
+      - name: Publicar resumen de tests y cobertura
+        if: always()
+        run: |
+          # Suma los atributos tests/failures/errors/skipped de los TEST-*.xml de un directorio
+          contar() {
+            if ! ls "$1"/TEST-*.xml >/dev/null 2>&1; then
+              echo "| $2 | - | - | - | - |"
+              return
+            fi
+            awk -v tipo="$2" '
+              /<testsuite / {
+                for (i = 1; i <= NF; i++) {
+                  if ($i ~ /^tests=/)    { gsub(/[^0-9]/, "", $i); t += $i }
+                  if ($i ~ /^failures=/) { gsub(/[^0-9]/, "", $i); f += $i }
+                  if ($i ~ /^errors=/)   { gsub(/[^0-9]/, "", $i); e += $i }
+                  if ($i ~ /^skipped=/)  { gsub(/[^0-9]/, "", $i); s += $i }
+                }
+              }
+              END { printf "| %s | %d | %d | %d | %d |\n", tipo, t, f, e, s }
+            ' "$1"/TEST-*.xml
+          }
+
+          {
+            echo "## Resultados de pruebas"
+            echo
+            echo "| Tipo | Tests | Fallos | Errores | Omitidos |"
+            echo "|---|---:|---:|---:|---:|"
+            contar target/surefire-reports "Unitarias (surefire)"
+            contar target/failsafe-reports "Integración (failsafe)"
+            echo
+            echo "## Cobertura (JaCoCo, unitarias + integración)"
+            echo
+            CSV=target/site/jacoco/jacoco.csv
+            if [ -f "$CSV" ]; then
+              # Columnas del CSV: 6-7 ramas perdidas/cubiertas, 8-9 líneas perdidas/cubiertas
+              awk -F, 'NR > 1 { lm += $8; lc += $9; bm += $6; bc += $7 }
+                END {
+                  print "| Métrica | Cubiertas | Total | Cobertura |"
+                  print "|---|---:|---:|---:|"
+                  printf "| Líneas | %d | %d | %.1f%% |\n", lc, lc + lm, 100 * lc / (lc + lm)
+                  printf "| Ramas | %d | %d | %.1f%% |\n", bc, bc + bm, 100 * bc / (bc + bm)
+                }' "$CSV"
+              echo
+              echo "Umbrales: ver la sección *Política de calidad* de CONTRIBUTING.md. Reporte HTML en el artefacto \`reporte-cobertura\`."
+            else
+              echo "No se generó el reporte de cobertura (el job falló antes de la fase verify)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Sube los reportes de tests (surefire = unitarias, failsafe = integración), incluso si el job falló
       - name: Subir reportes de tests
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports
-          path: target/surefire-reports/
+          name: reportes-tests
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+
+      # Sube el reporte HTML de cobertura de JaCoCo (abrir index.html), incluso si falló el umbral
+      - name: Subir reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-cobertura
+          path: target/site/jacoco/
+          if-no-files-found: ignore
 
       # Sube el JAR generado como artefacto del workflow
       - name: Subir JAR generado
