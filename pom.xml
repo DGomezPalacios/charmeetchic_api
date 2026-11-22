@@ -22,6 +22,12 @@
         <jjwt.version>0.12.6</jjwt.version>
         <!-- true = omite solo las pruebas unitarias (surefire); failsafe sigue corriendo. -->
         <skipUTs>false</skipUTs>
+        <!-- Umbrales de cobertura (política de calidad, ver CONTRIBUTING.md). Se fijan unos puntos bajo la
+             cobertura medida: alcanzables, pero un retroceso real hace fallar `mvn verify`. -->
+        <cobertura.lineas.min>0.93</cobertura.lineas.min>
+        <cobertura.ramas.min>0.82</cobertura.ramas.min>
+        <cobertura.service.lineas.min>0.95</cobertura.service.lineas.min>
+        <cobertura.service.ramas.min>0.85</cobertura.service.ramas.min>
     </properties>
 
     <dependencies>
@@ -158,6 +164,93 @@
                             <goal>integration-test</goal>
                             <goal>verify</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Cobertura con JaCoCo, combinada de unitarias + integración:
+                 prepare-agent define ${argLine}, que usan tanto surefire como failsafe, y ambos
+                 escriben (append) en el mismo target/jacoco.exec. El reporte se genera en verify,
+                 después de las pruebas de integración, con salida HTML (lectura humana),
+                 XML (SonarCloud) y CSV (resumen del CI). -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <configuration>
+                    <excludes>
+                        <!-- Clase main: solo invoca SpringApplication.run, no tiene lógica propia. -->
+                        <exclude>com/charmeetchic/api/CharmeetchicApiApplication.class</exclude>
+                        <!-- DTOs: son records (constructor, accessors, equals/hashCode generados por el
+                             compilador); medirlos solo infla o desinfla el porcentaje sin aportar. -->
+                        <exclude>com/charmeetchic/api/dto/**</exclude>
+                        <!-- Entidades JPA: getters/setters/builders generados por Lombok y mapeo
+                             declarativo con anotaciones; su comportamiento real lo prueban los
+                             servicios y las pruebas de integración contra H2. -->
+                        <exclude>com/charmeetchic/api/entity/**</exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <!-- Política de calidad: si la cobertura baja de los umbrales, `mvn verify` falla
+                         (y con él el check build-and-test, que bloquea el merge). -->
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <!-- Todo el proyecto (sin las exclusiones de arriba) -->
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${cobertura.lineas.min}</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${cobertura.ramas.min}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                                <!-- Reglas de negocio (stock, totales, estados, validación de tokens): más exigente -->
+                                <rule>
+                                    <element>PACKAGE</element>
+                                    <includes>
+                                        <include>com.charmeetchic.api.service</include>
+                                    </includes>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${cobertura.service.lineas.min}</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${cobertura.service.ramas.min}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
