@@ -29,19 +29,38 @@ gitGraph
     checkout develop
     merge feature/filtro-precio id: "PR #2"
     checkout main
-    merge develop id: "release" tag: "v1.0.0"
+    merge develop id: "PR #3 release" tag: "v1.0.0"
+    checkout develop
+    branch docs/guia-devops
+    checkout docs/guia-devops
+    commit id: "docs(contributing)"
+    commit id: "docs(workflow)"
+    commit id: "docs(readme) devops"
+    checkout develop
+    merge docs/guia-devops id: "PR docs"
+    checkout main
     branch hotfix/firebase-project-id
     checkout hotfix/firebase-project-id
-    commit id: "fix(config) project-id"
+    commit id: "docs(readme): corrige Project ID de Firebase por defecto en el README"
     checkout main
-    merge hotfix/firebase-project-id id: "hotfix" tag: "v1.0.1"
+    merge hotfix/firebase-project-id id: "PR hotfix" tag: "v1.0.1"
     checkout develop
     merge main id: "back-merge"
+    checkout main
+    merge develop id: "PR release v1.1.0" tag: "v1.1.0"
 ```
 
-- Las features salen de `develop` y vuelven a `develop` mediante PR con merge commit.
-- La release lleva `develop` a `main` y se marca con el tag anotado `v1.0.0`.
-- El hotfix sale de `main`, vuelve a `main` con el tag `v1.0.1` y se hace back-merge a `develop`.
+Secuencia real de versiones:
+
+1. **Release `v1.0.0`**: el PR #3 lleva `develop` (PR #1 y PR #2) a `main`; el commit de merge se marca con el tag
+   anotado `v1.0.0`.
+2. **Documentación a `develop`**: `docs/guia-devops` (esta guía, `CONTRIBUTING.md` y la sección DevOps del README)
+   se integra en `develop` mediante PR. Todavía no llega a `main`.
+3. **Hotfix `v1.0.1`**: `hotfix/*` es una corrección urgente sobre `main` (producción). En este proyecto corrige
+   documentación: el Project ID de Firebase por defecto indicado en el README de producción. Sale de `main`, vuelve
+   a `main` con el tag `v1.0.1` y se hace back-merge de `main` a `develop` para no perder la corrección.
+4. **Release `v1.1.0`**: un nuevo PR `develop → main` lleva la documentación y las convenciones a producción, junto
+   con la corrección del hotfix ya incorporada en `develop`.
 
 ---
 

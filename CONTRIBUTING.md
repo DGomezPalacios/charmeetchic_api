@@ -16,7 +16,7 @@ Volver al [README](README.md).
 | `main` | Código en producción. Cada merge corresponde a una versión publicada con tag `vX.Y.Z`. | — (rama permanente) | — |
 | `develop` | Rama de integración: contiene las funcionalidades terminadas que irán en la próxima release. | `main` (una sola vez) | `main` (como release) |
 | `feature/*` | Desarrollo de una funcionalidad nueva o mejora. | `develop` | `develop` |
-| `hotfix/*` | Corrección urgente de un error en producción. | `main` | `main` (con tag) y luego `develop` (back-merge) |
+| `hotfix/*` | Corrección urgente sobre `main` (producción): puede afectar código, configuración o documentación. | `main` | `main` (con tag) y luego `develop` (back-merge) |
 | `docs/*` | Cambios solo de documentación. | `develop` | `develop` |
 
 `main` y `develop` son ramas permanentes y protegidas: no se hace push directo a ellas, todo entra mediante PR.
@@ -36,7 +36,7 @@ Ejemplos reales de este repositorio:
 |---|---|
 | `feature/health-version` | Expone la versión de la API en `GET /api/health`. |
 | `feature/filtro-precio` | Filtro `minPrice`/`maxPrice` en `GET /api/products/search`. |
-| `hotfix/firebase-project-id` | Corrección del Project ID de Firebase en producción. |
+| `hotfix/firebase-project-id` | Corrige el Project ID de Firebase por defecto documentado en el README de producción. |
 | `docs/guia-devops` | Esta guía de contribución y la documentación del flujo DevOps. |
 
 ---
@@ -86,7 +86,11 @@ test(products): cubre el filtro minPrice/maxPrice de /products/search
 docs(readme): documenta minPrice/maxPrice en /api/products/search
 fix(products): rechaza precios negativos en la búsqueda por rango
 ci: agrega workflow de integración continua y plantilla de PR
+docs(readme): corrige Project ID de Firebase por defecto en el README
 ```
+
+El último ejemplo corresponde al hotfix `hotfix/firebase-project-id`: aunque es una corrección urgente sobre
+`main`, lo que se corrige es documentación, por eso su tipo es `docs` y no `fix`.
 
 Cada commit debe ser una unidad lógica: el código, sus tests y su documentación van en commits separados cuando eso
 facilita la revisión (como en `feature/health-version` y `feature/filtro-precio`).
@@ -111,15 +115,19 @@ facilita la revisión (como en `feature/health-version` y `feature/filtro-precio
 
    ```bash
    git checkout main && git pull
-   git tag -a v1.0.0 -m "Release v1.0.0: versión en /health y filtro de precio"
+   git tag -a v1.0.0 -m "Primera versión estable: health con versión y filtro por precio"
    git push origin v1.0.0
    ```
 
 ### hotfix/* → main → develop
 
+`hotfix/*` es una corrección urgente sobre `main` (producción). No siempre es código: el tipo del commit depende de
+lo que se corrige (`fix(...)` para código, `docs(...)` para documentación, etc.).
+
 1. Crear la rama desde `main`: `git checkout -b hotfix/firebase-project-id main`.
-2. Corregir con un commit `fix(...)` y abrir un PR hacia `main`.
-3. Tras el merge, crear el tag anotado de la versión de parche (por ejemplo `v1.0.1`).
+2. Aplicar la corrección y abrir un PR hacia `main`. En este proyecto el hotfix corrige documentación, con el commit
+   `docs(readme): corrige Project ID de Firebase por defecto en el README`.
+3. Tras el merge, crear el tag anotado de la versión de parche (`v1.0.1`).
 4. Hacer **back-merge** de `main` a `develop` (PR `main → develop`) para que la corrección no se pierda en la
    siguiente release.
 
@@ -135,10 +143,18 @@ Las versiones siguen [SemVer](https://semver.org/lang/es/) con el formato `MAJOR
 
 En este proyecto:
 
-- **`v1.0.0`**: primera release publicada en `main`, con la versión expuesta en `/api/health` y el filtro de precio
-  en `/api/products/search` (PR #1 y PR #2 integrados en `develop` y llevados a `main`).
-- **`v1.0.1`**: versión de parche generada por `hotfix/firebase-project-id`; corrige un error sin agregar
-  funcionalidad, por eso solo cambia `PATCH`.
+- **`v1.0.0`**: primera release publicada en `main` mediante el PR #3 (`develop → main`), con la versión expuesta en
+  `/api/health` y el filtro de precio en `/api/products/search` (PR #1 y PR #2 integrados en `develop`).
+- **`v1.0.1`**: versión de parche generada por `hotfix/firebase-project-id`; corrige el Project ID de Firebase por
+  defecto documentado en el README sin agregar funcionalidad ni cambiar la API, por eso solo cambia `PATCH`. Tras el
+  merge a `main` se hace back-merge a `develop`.
+- **`v1.1.0`**: release `develop → main` que lleva a producción la documentación de `docs/guia-devops` (esta guía,
+  [docs/workflow.md](docs/workflow.md) y la sección DevOps del README). Es `MINOR` porque incorpora documentación y
+  convenciones nuevas sin cambiar el contrato de la API: las rutas, los DTOs y la autenticación siguen iguales, por
+  lo que ningún cliente existente se ve afectado.
+
+La secuencia completa (release, hotfix con back-merge y nueva release) está diagramada en
+[docs/workflow.md](docs/workflow.md).
 
 ---
 
