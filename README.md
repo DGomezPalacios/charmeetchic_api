@@ -1,5 +1,7 @@
 # charmeetchic-api
 
+[![CI](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml)
+
 API REST para el **control de inventario** de la tienda de accesorios y joyas **Charme et Chic**, diseñada para
 crecer hacia un ecommerce (carrito, checkout, pagos).
 
@@ -8,6 +10,18 @@ crecer hacia un ecommerce (carrito, checkout, pagos).
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
 - **URL base:** `http://localhost:8080/api`
+
+---
+
+## DevOps
+
+Proyecto **individual**: el desarrollo, la revisión de los PR y la gestión del repositorio los realiza una sola persona,
+siguiendo GitFlow con PR obligatorios y CI en GitHub Actions.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): modelo de ramas, naming, convención de commits, flujo de merge, versionado,
+  estrategia de revisión y estructura de carpetas.
+- [docs/workflow.md](docs/workflow.md): diagramas del flujo GitFlow y del pipeline de CI, y cuándo se ejecuta el
+  workflow.
 
 ---
 
@@ -477,3 +491,25 @@ La API está pensada para separarse por dominios sin reescribir la seguridad:
 - Verificar que `FIREBASE_PROJECT_ID` (por defecto `charme-et-chic`) coincide con el Project ID del proyecto de Firebase usado por el frontend.
 - Servir la API solo por HTTPS y ajustar `CORS_ALLOWED_ORIGINS` al dominio real del frontend.
 - Restringir `logging.level.com.charmeetchic` a `INFO`.
+
+---
+
+## Justificación del modelo de ramificación
+
+Cuando integré las dos ramas feature dentro de `develop`, la rama `main` no sufrió ningún cambio. En una tienda real como Charme et Chic esto es fundamental: `main` representa lo que los clientes están usando para comprar en tiempo real, por lo que no podemos arriesgar la estabilidad de la producción mientras desarrollamos el carrito o la pasarela de pagos. Aunque existen alternativas como GitHub Flow, este modelo envía cada integración directamente a `main`, careciendo de una capa de aislamiento como `develop` para acumular funcionalidades grandes antes de lanzarlas. Por otro lado, Trunk-Based Development exige una alta madurez técnica y el uso intensivo de feature flags (conmutadores de código) para ocultar cambios incompletos en producción, algo inviable sin un equipo dedicado. En nuestro contexto colaborativo en la nube, la combinación de GitHub y GitHub Actions es el eje del flujo: GitHub centraliza el código y gestiona los Pull Requests con reglas de protección, mientras que Actions ejecuta automáticamente el workflow con los steps de `mvn -B verify` (que compila, ejecuta la suite de pruebas unitarias e integración —incluidas `FirebaseAuthIntegrationTest` y `ApiIntegrationTest` con H2— y empaqueta el JAR) seguido del smoke test al endpoint `/api/health` antes de autorizar la fusión.
+
+Frente al escenario de corregir la documentación del `FIREBASE_PROJECT_ID` (donde se indicaba por error `charmeetchic` en lugar del valor real `charme-et-chic` configurado en `application.yml`), mientras en `develop` hay código a medio terminar, GitFlow ofrece un camino súper claro: creo la rama `hotfix/*` directamente desde la rama `main`, aplico la corrección en la documentación para evitar que una mala configuración induzca a errores en despliegues futuros, y la fusiono de vuelta tanto a `main` como a `develop` (realizando el back-merge correspondiente). Esto soluciona una inconsistencia en la documentación de producción sin arrastrar trabajo incompleto de `develop`. Al cerrar el hotfix, incremento la versión semántica de `v1.0.0` a `v1.0.1`. Para el panel Angular que consume la API (o en un escenario real con un equipo de frontend), esta actualización indica que se ajustó un detalle de configuración sin modificar los DTOs, las rutas ni la lógica del `authInterceptor`, garantizando que el contrato del servicio se mantiene intacto.
+
+Asumo completamente los costos de haber elegido GitFlow: implicó gestionar más ramas, abrir múltiples Pull Requests y coordinar la sincronización entre `main` y `develop`. Sin embargo, acepto esta sobrecarga por dos motivos clave: primero, porque al tratar con una API transaccional que maneja inventario con bloqueo optimista (`@Version`), cálculo de impuestos (19% de IVA/`tax`) y seguridad con Firebase Auth, la estabilidad del negocio exige un control riguroso sobre la velocidad; y segundo, porque al desarrollarse en un entorno académico, me permite demostrar el dominio de un ciclo de vida de software empresarial completo.
+
+## Conclusiones
+
+<!-- A completar por la autora -->
+
+## Reflexión personal
+
+<!-- A completar por la autora -->
+
+## Declaración de uso de IA
+
+<!-- A completar por la autora -->
