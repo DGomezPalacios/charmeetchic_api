@@ -16,6 +16,11 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.interfaces.RSAPublicKey;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,6 +40,8 @@ class JwksKeyProviderTest {
 
     private final KeyPair googleKey = generateRsaKeyPair();
     private final AtomicInteger requests = new AtomicInteger();
+    // Cada test crea su propio reloj, servidor y provider (JUnit instancia la clase por test): no hay estado compartido.
+    private final MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
 
     private HttpServer server;
     private volatile int status = 200;
@@ -43,6 +50,7 @@ class JwksKeyProviderTest {
     @BeforeEach
     void startFakeGoogle() throws Exception {
         body = jwks(rsaJwk("kid-1", (RSAPublicKey) googleKey.getPublic()));
+        // Puerto 0: el sistema asigna uno libre en cada test, así no choca con otro proceso ni con otro test.
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/jwks", exchange -> {
             requests.incrementAndGet();
@@ -71,9 +79,10 @@ class JwksKeyProviderTest {
 
     @Test
     void knownKid_returnsGooglePublicKey_andCachesIt() {
-        JwksKeyProvider provider = provider(0);
+        JwksKeyProvider provider = provider(300);
 
         assertThat(provider.getKey("kid-1")).isEqualTo(googleKey.getPublic());
+        clock.advance(Duration.ofHours(1)); // ni pasado el intervalo se descarga de nuevo una clave ya conocida
         assertThat(provider.getKey("kid-1")).isEqualTo(googleKey.getPublic());
 
         assertThat(requests).as("la segunda consulta sale de la caché").hasValue(1);
@@ -86,6 +95,7 @@ class JwksKeyProviderTest {
 
         for (int i = 0; i < 5; i++) {
             String fakeKid = "inventado-" + i;
+            clock.advance(Duration.ofSeconds(59)); // 5 x 59 s = 295 s: siempre dentro del intervalo de 300 s
             assertThatThrownBy(() -> provider.getKey(fakeKid))
                     .isInstanceOf(InvalidJwtException.class)
                     .hasMessageContaining("desconocida");
@@ -95,13 +105,18 @@ class JwksKeyProviderTest {
     }
 
     @Test
-    void rotatedKey_isPickedUpAfterTheMinimumInterval() {
-        JwksKeyProvider provider = provider(0);
+    void rotatedKey_isPickedUpOnlyAfterTheMinimumInterval() {
+        JwksKeyProvider provider = provider(300);
         provider.getKey("kid-1");
 
         KeyPair rotated = generateRsaKeyPair();
         body = jwks(rsaJwk("kid-2", (RSAPublicKey) rotated.getPublic()));
 
+        clock.advance(Duration.ofSeconds(299));
+        assertThatThrownBy(() -> provider.getKey("kid-2")).isInstanceOf(InvalidJwtException.class);
+        assertThat(requests).as("antes del intervalo no se recarga").hasValue(1);
+
+        clock.advance(Duration.ofSeconds(1)); // justo 300 s después de la primera descarga
         assertThat(provider.getKey("kid-2")).isEqualTo(rotated.getPublic());
         assertThat(requests).hasValue(2);
     }
@@ -140,7 +155,36 @@ class JwksKeyProviderTest {
             }
         };
         config.setJwksMinRefreshSeconds(minRefreshSeconds);
-        return new JwksKeyProvider(config, new ObjectMapper());
+        return new JwksKeyProvider(config, new ObjectMapper(), clock);
+    }
+
+    /** Reloj que solo avanza cuando el test lo pide: el resultado no depende de la velocidad de la máquina. */
+    private static final class MutableClock extends Clock {
+
+        private Instant now;
+
+        private MutableClock(Instant start) {
+            this.now = start;
+        }
+
+        void advance(Duration duration) {
+            now = now.plus(duration);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
     }
 
     private static String jwks(String... keys) {
