@@ -1,0 +1,41 @@
+# -----------------------------------------------------------------------------
+# Perfil "prod": se activa con SPRING_PROFILES_ACTIVE=prod (lo hace docker-compose.prod.yml).
+# Solo contiene lo que CAMBIA respecto de application.yml; el resto se hereda.
+#
+# Todos los secretos llegan por variables de entorno desde el archivo .env de la VM (no versionado).
+# Las variables SIN valor por defecto (${DB_PASSWORD}) son obligatorias: si faltan, la app no arranca.
+# -----------------------------------------------------------------------------
+spring:
+  datasource:
+    # Contenedor "postgres" del docker-compose.prod.yml
+    url: ${DB_URL:jdbc:postgresql://postgres:5432/charmeetchic}
+    username: ${DB_USERNAME:charmeetchic}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Pool chico: la VM tiene 4 GB para todos los contenedores.
+      maximum-pool-size: 5
+  jpa:
+    hibernate:
+      # update: crea las tablas que falten y NO borra datos al reiniciar (create-drop era para H2).
+      # Para un sistema real se usaría Flyway/Liquibase con migraciones versionadas.
+      ddl-auto: update
+  sql:
+    init:
+      # Carga el catálogo inicial en cada arranque; data-prod.sql es idempotente (no duplica).
+      mode: always
+      data-locations: classpath:data-prod.sql
+  h2:
+    console:
+      enabled: false
+
+server:
+  # La app está detrás de Caddy + gateway: usa X-Forwarded-Proto/Host para que las URLs que genera
+  # (header Location de los 201/202) sean https://<dominio>/api/... y no http://backend:8080/...
+  forward-headers-strategy: framework
+
+logging:
+  level:
+    com.charmeetchic: INFO
+
+# app.messaging.demo.simulated-failures-enabled queda en true (heredado): se usa en la demo en la nube.

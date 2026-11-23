@@ -3,6 +3,7 @@ package com.charmeetchic.api.service;
 import com.charmeetchic.api.dto.ProductDTO;
 import com.charmeetchic.api.entity.Category;
 import com.charmeetchic.api.entity.Product;
+import com.charmeetchic.api.enums.MovementType;
 import com.charmeetchic.api.exception.ConflictException;
 import com.charmeetchic.api.exception.ResourceNotFoundException;
 import com.charmeetchic.api.exception.ValidationException;
@@ -38,13 +39,16 @@ public class ProductService {
 
     private final ProductRepository productRepository;
     private final CategoryRepository categoryRepository;
+    private final StockEventService stockEventService;
     private final int lowStockThreshold;
 
     public ProductService(ProductRepository productRepository,
                           CategoryRepository categoryRepository,
+                          StockEventService stockEventService,
                           @Value("${app.inventory.low-stock-threshold:5}") int lowStockThreshold) {
         this.productRepository = productRepository;
         this.categoryRepository = categoryRepository;
+        this.stockEventService = stockEventService;
         this.lowStockThreshold = lowStockThreshold;
     }
 
@@ -114,6 +118,7 @@ public class ProductService {
 
         log.info("Producto creado: id={}, sku={}, stock={}, price={}", saved.getId(), saved.getSku(),
                 saved.getStock(), saved.getPrice());
+        stockEventService.stockChanged(saved, 0, MovementType.INGRESO_INICIAL, "creación de producto");
         return ProductDTO.from(saved);
     }
 
@@ -136,6 +141,7 @@ public class ProductService {
             product.setCategory(categoryRepository.findById(dto.categoryId())
                     .orElseThrow(() -> new ResourceNotFoundException("Categoría", dto.categoryId())));
         }
+        int previousStock = product.getStock();
         if (!product.getStock().equals(dto.stock())) {
             log.info("Stock modificado manualmente: id={}, sku={}, {} -> {}", id, sku, product.getStock(), dto.stock());
         }
@@ -157,6 +163,7 @@ public class ProductService {
         // saveAndFlush: fuerza aquí el chequeo de versión y devuelve el DTO con la versión nueva.
         Product saved = productRepository.saveAndFlush(product);
         log.info("Producto actualizado: id={}, sku={}, version={}", id, saved.getSku(), saved.getVersion());
+        stockEventService.stockChanged(saved, previousStock, MovementType.AJUSTE_MANUAL, "ajuste manual de producto");
         return ProductDTO.from(saved);
     }
 

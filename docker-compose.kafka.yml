@@ -1,0 +1,228 @@
+# =============================================================================
+# Clúster de KAFKA (EP5): 3 nodos Zookeeper (ensemble) + 3 brokers + Kafka UI.
+# Archivo SEPARADO del stack de RabbitMQ (docker-compose.prod.yml): se puede usar solo o junto a él.
+#
+#   Solo Kafka (desarrollo local; la API corre con `mvn spring-boot:run` y se conecta a localhost:19092):
+#     docker compose -f docker-compose.kafka.yml up -d
+#   Todo junto (Codespaces / PC): ./deploy/codespaces-up.sh
+#     = docker compose -f docker-compose.prod.yml -f docker-compose.kafka.yml -f docker-compose.codespaces.yml up -d
+#
+#                ┌──────────── ensemble Zookeeper (quórum 2 de 3) ────────────┐
+#                │  zookeeper1:2181    zookeeper2:2181    zookeeper3:2181      │  metadatos: brokers vivos,
+#                └──────▲───────────────────▲───────────────────▲─────────────┘  controlador, config de tópicos
+#                       │                   │                   │
+#                  kafka1:9092 ◄──réplica──► kafka2:9092 ◄──réplica──► kafka3:9092   (RF 3, min ISR 2)
+#                       ▲                                                   ▲
+#        backend / kafka-admin / kafka-ui (red interna)        host: 127.0.0.1:19092/29092/39092
+#
+# Por qué 3 + 3:
+#   - Zookeeper decide por MAYORÍA: con 3 nodos tolera la caída de 1 (2 de 3 siguen formando quórum).
+#     Con 2 nodos no tolera ninguna caída (1 de 2 no es mayoría), por eso un ensemble siempre es impar.
+#   - 3 brokers permiten replication.factor=3 con min.insync.replicas=2: un productor con acks=all
+#     sigue escribiendo aunque caiga 1 broker, y ningún mensaje confirmado vive en un solo disco.
+#
+# Imágenes Confluent 7.9.1 (Kafka 3.9): la última línea que todavía soporta Zookeeper (Kafka 4 / Confluent 8
+# solo funcionan con KRaft). Versiones FIJAS: un `latest` podría cambiar de un día a otro y romper la demo.
+#
+# Memoria (mem_limit): 3 x 256 (ZK) + 3 x 768 (brokers) + 384 (UI) = 3456 MiB. Sumado al stack de RabbitMQ
+# (~3,5 GiB con los ajustes de Codespaces) deja más de la mitad libre en un Codespace de 16 GB.
+# Cada JVM lleva un heap fijo MENOR que su mem_limit: el resto es memoria fuera del heap (page cache,
+# metaspace, buffers de red). Kafka se apoya mucho en la page cache del sistema operativo, no en el heap.
+# =============================================================================
+
+x-kafka-defaults: &kafka-defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# Configuración común a los 3 nodos Zookeeper; cada uno solo cambia su ID y sus volúmenes.
+x-zookeeper: &zookeeper
+  <<: *kafka-defaults
+  image: confluentinc/cp-zookeeper:7.9.1
+  mem_limit: 256m
+  environment: &zookeeper-env
+    ZOOKEEPER_CLIENT_PORT: 2181
+    # tickTime = unidad de tiempo de Zookeeper (ms). initLimit/syncLimit se miden en ticks: un seguidor tiene
+    # 5 ticks (10 s) para sincronizar al unirse y 2 ticks (4 s) para responder antes de que lo den por caído.
+    ZOOKEEPER_TICK_TIME: 2000
+    ZOOKEEPER_INIT_LIMIT: 5
+    ZOOKEEPER_SYNC_LIMIT: 2
+    # Miembros del ensemble: host:puerto-de-réplica(2888):puerto-de-elección-de-líder(3888).
+    ZOOKEEPER_SERVERS: zookeeper1:2888:3888;zookeeper2:2888:3888;zookeeper3:2888:3888
+    # Comandos de 4 letras permitidos: 'srvr' lo usa el healthcheck y 'ruok'/'mntr' sirven para diagnosticar.
+    KAFKA_OPTS: -Dzookeeper.4lw.commands.whitelist=srvr,ruok,mntr
+    KAFKA_HEAP_OPTS: -Xms96m -Xmx128m
+  # Sano = el nodo FORMA PARTE DEL QUÓRUM ("Mode: leader" o "Mode: follower"). Un nodo vivo pero aislado
+  # responde "not currently serving requests" y queda unhealthy. Se usa /dev/tcp de bash: no hace falta nc.
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2181 && echo srvr >&3 && grep -q \"Mode: \" <&3'"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 20s
+
+# Configuración común a los 3 brokers; cada uno cambia su ID, su listener externo y su volumen.
+x-kafka: &kafka
+  <<: *kafka-defaults
+  image: confluentinc/cp-kafka:7.9.1
+  mem_limit: 768m
+  depends_on:
+    zookeeper1:
+      condition: service_healthy
+    zookeeper2:
+      condition: service_healthy
+    zookeeper3:
+      condition: service_healthy
+  environment: &kafka-env
+    KAFKA_ZOOKEEPER_CONNECT: zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
+    # Dos listeners: INTERNAL para la red de Docker (brokers entre sí, backend, kafka-admin, kafka-ui) y
+    # EXTERNAL para el host (127.0.0.1:<puerto>), así la API también puede correr fuera de Docker.
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    # --- Durabilidad (valores por defecto del clúster) ---
+    # Toda partición nueva se copia en los 3 brokers...
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    # ...y una escritura con acks=all se confirma recién cuando al menos 2 réplicas la tienen. Si quedara
+    # 1 sola réplica viva, el broker RECHAZA la escritura (NotEnoughReplicas) en vez de arriesgar perderla.
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    # Tópicos internos (offsets de los consumer groups y transacciones) con la misma durabilidad.
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    # Una réplica atrasada NUNCA se elige líder: preferimos no estar disponibles a perder mensajes.
+    KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+    # Los tópicos se crean explícitamente (beans NewTopic de la API o kafka-admin), nunca "por accidente"
+    # al publicar en un nombre mal escrito.
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    KAFKA_NUM_PARTITIONS: 3
+    # Retención por defecto de 7 días (los tópicos pueden sobrescribirla con retention.ms).
+    KAFKA_LOG_RETENTION_HOURS: 168
+    # El compactador reserva por defecto 128 MB de heap para deduplicar claves: demasiado para un heap
+    # de 384 MB. 32 MB alcanzan de sobra para el volumen de la demo.
+    KAFKA_LOG_CLEANER_DEDUPE_BUFFER_SIZE: 33554432
+    # Sin espera inicial al formar un consumer group (por defecto 3 s): la demo de reparto de particiones
+    # se ve al instante.
+    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    KAFKA_HEAP_OPTS: -Xms384m -Xmx384m
+  # Sano = el broker responde a una petición real del protocolo Kafka. La herramienta es otra JVM: se le
+  # da un heap chico para que no herede los 384 MB del broker y no reviente el mem_limit del contenedor.
+  healthcheck:
+    test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx64m kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+    interval: 15s
+    timeout: 20s
+    retries: 12
+    start_period: 30s
+
+services:
+  # ---------------------------------------------------------------- Zookeeper: ensemble de 3 nodos
+  zookeeper1:
+    <<: *zookeeper
+    hostname: zookeeper1
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 1
+    volumes:
+      - zookeeper1-data:/var/lib/zookeeper/data
+      - zookeeper1-log:/var/lib/zookeeper/log
+
+  zookeeper2:
+    <<: *zookeeper
+    hostname: zookeeper2
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 2
+    volumes:
+      - zookeeper2-data:/var/lib/zookeeper/data
+      - zookeeper2-log:/var/lib/zookeeper/log
+
+  zookeeper3:
+    <<: *zookeeper
+    hostname: zookeeper3
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 3
+    volumes:
+      - zookeeper3-data:/var/lib/zookeeper/data
+      - zookeeper3-log:/var/lib/zookeeper/log
+
+  # ---------------------------------------------------------------- Kafka: 3 brokers
+  kafka1:
+    <<: *kafka
+    hostname: kafka1
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 1
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka1:9092,EXTERNAL://localhost:19092
+    ports:
+      - "127.0.0.1:19092:19092"   # solo desde el propio equipo, nunca desde Internet
+    volumes:
+      - kafka1-data:/var/lib/kafka/data
+
+  kafka2:
+    <<: *kafka
+    hostname: kafka2
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 2
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:9092,EXTERNAL://localhost:29092
+    ports:
+      - "127.0.0.1:29092:29092"
+    volumes:
+      - kafka2-data:/var/lib/kafka/data
+
+  kafka3:
+    <<: *kafka
+    hostname: kafka3
+    environment:
+      <<: *kafka-env
+      KAFKA_BROKER_ID: 3
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:39092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:9092,EXTERNAL://localhost:39092
+    ports:
+      - "127.0.0.1:39092:39092"
+    volumes:
+      - kafka3-data:/var/lib/kafka/data
+
+  # ---------------------------------------------------------------- Kafka UI (consola web)
+  # Tópicos, particiones, líderes/ISR, mensajes (incluidos los headers de error de los .DLT) y LAG de cada
+  # consumer group. No tiene login propio: se publica solo en 127.0.0.1 (en Codespaces, puerto PRIVADO).
+  kafka-ui:
+    <<: *kafka-defaults
+    image: provectuslabs/kafka-ui:v0.7.2
+    environment:
+      KAFKA_CLUSTERS_0_NAME: charmeetchic
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka1:9092,kafka2:9092,kafka3:9092
+      DYNAMIC_CONFIG_ENABLED: "false"
+      JAVA_OPTS: -Xmx256m -XX:+UseSerialGC
+    ports:
+      - "127.0.0.1:${KAFKA_UI_PORT:-8085}:8080"
+    mem_limit: 384m
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+volumes:
+  zookeeper1-data:
+  zookeeper1-log:
+  zookeeper2-data:
+  zookeeper2-log:
+  zookeeper3-data:
+  zookeeper3-log:
+  kafka1-data:
+  kafka2-data:
+  kafka3-data:

@@ -1,6 +1,7 @@
-# Archivos que NO se envían al contexto de build de Docker.
+# Archivos que NO se envían al contexto de build de Docker del backend (contexto = raíz del repo).
 # El Dockerfile solo necesita pom.xml y src/; todo lo demás se excluye para que el contexto sea
-# pequeño y ningún secreto pueda terminar dentro de una imagen.
+# pequeño y ningún secreto pueda terminar dentro de una imagen. Lo usan tanto el job docker del CI
+# como docker-compose.prod.yml (build: context: .).
 
 # Secretos: variables de entorno y credenciales de Firebase
 .env
@@ -29,6 +30,16 @@ postman/
 # Scripts de Node que no usa la API (scripts/firebase: alta de administradores) y sus dependencias
 scripts/
 node_modules/
+
+# Otras apps del repo: cada una tiene su propio Dockerfile y contexto de build
+rabbit-admin/
+kafka-admin/
+gateway/
+
+# Despliegue (compose, Caddy, scripts de VM/Codespaces) y devcontainer: no forman parte de la imagen
+deploy/
+.devcontainer/
+docker-compose*.yml
 
 # IDE, herramientas locales y sistema operativo
 .idea/

@@ -85,6 +85,29 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- Mensajería con RabbitMQ (Spring AMQP): RabbitTemplate, RabbitAdmin, @RabbitListener.
+             La conexión al broker es perezosa: la app (y los tests) arrancan aunque RabbitMQ no esté. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- Streaming con Apache Kafka (Spring for Apache Kafka): KafkaTemplate, KafkaAdmin/NewTopic,
+             @KafkaListener, DefaultErrorHandler y DeadLetterPublishingRecoverer. Complementa a RabbitMQ:
+             RabbitMQ reparte TAREAS (cada mensaje lo procesa un consumidor y se borra), Kafka guarda un LOG de
+             eventos que varios grupos leen de forma independiente y que se puede releer. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL: base de datos del perfil prod (contenedor postgres en la VM) -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Base de datos en memoria para desarrollo -->
         <dependency>
             <groupId>com.h2database</groupId>
@@ -138,6 +161,18 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Broker Kafka embebido (en memoria) para la prueba de integración del streaming: no requiere Docker -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Esperas con timeout para aserciones asíncronas (consumo de Kafka) sin Thread.sleep fijos -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

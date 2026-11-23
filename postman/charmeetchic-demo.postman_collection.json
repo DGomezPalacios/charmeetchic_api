@@ -1,0 +1,2469 @@
+{
+  "info": {
+    "_postman_id": "6728cb44-5d4f-4ab4-b256-b0e820881ba7",
+    "name": "Charme et Chic – Demo EP3/EP4 (RabbitMQ) + EP5 (Kafka)",
+    "description": "Demo en orden de presentación. Antes de empezar: 1) pegar un token fresco de Firebase en la variable `token` (dura 1 hora); 2) correr la carpeta 0. Preparación. Si el Codespace cambia, actualizar `baseUrl`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://vigilant-xylophone-g45r4wg64g9v397r9-8000.app.github.dev"
+    },
+    {
+      "key": "token",
+      "value": "PEGA_AQUI_EL_ID_TOKEN_DE_FIREBASE"
+    },
+    {
+      "key": "productId",
+      "value": ""
+    },
+    {
+      "key": "qtyCruceUmbral",
+      "value": "4"
+    },
+    {
+      "key": "restockBody",
+      "value": ""
+    },
+    {
+      "key": "reportId",
+      "value": ""
+    },
+    {
+      "key": "failedReportId",
+      "value": ""
+    },
+    {
+      "key": "ventasAntes",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparación",
+      "description": "Corre esto antes de presentar. Pega un token fresco en la variable `token` (dura 1 hora): DevTools > Network > cualquier llamada a /api > header Authorization (lo que va después de 'Bearer ').",
+      "item": [
+        {
+          "name": "Health (público)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "No requiere token. Debe responder UP.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gateway rechaza sin token → 401",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products"
+              ]
+            },
+            "description": "El gateway corta la petición antes de llegar al backend.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 401\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mi perfil (token válido → 200, roles)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/profile",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "profile"
+              ]
+            },
+            "description": "Confirma que el token sirve y que trae rol ADMIN."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Tiene rol ADMIN\", () => pm.expect(JSON.stringify(pm.response.json())).to.include(\"ADMIN\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Buscar Estuche (guarda productId y cantidad)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/search?q=estuche",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "estuche"
+                }
+              ]
+            },
+            "description": "Busca por nombre (el buscador no usa SKU) y guarda el id del Estuche Joyero (ACC-EST-003) y calcula cuántas unidades vender para que el stock cruce el umbral de 5 (alerta de stock bajo)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const p = pm.response.json().content.find(x => x.sku === \"ACC-EST-003\");",
+                  "pm.test(\"Encontró el Estuche (ACC-EST-003)\", () => pm.expect(p, \"no vino en la búsqueda\").to.exist);",
+                  "if (p) {",
+                  "pm.collectionVariables.set(\"productId\", p.id);",
+                  "pm.collectionVariables.set(\"restockBody\", JSON.stringify(Object.assign({}, p, { stock: 8 })));",
+                  "const qty = p.stock >= 5 ? p.stock - 4 : 1;",
+                  "pm.collectionVariables.set(\"qtyCruceUmbral\", qty);",
+                  "pm.test(\"Stock actual \" + p.stock + (p.stock >= 5 ? \" (la venta lo dejará en 4 → alerta)\" : \" — OJO: ya está bajo 5, corre 'Reponer stock'\"), () => pm.expect(p.stock).to.be.at.least(5));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reponer stock del Estuche a 8 (entre ensayos)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products",
+                "{{productId}}"
+              ]
+            },
+            "description": "Úsalo si ensayaste y el stock quedó bajo 5. Primero corre 'Buscar Estuche'.",
+            "body": {
+              "mode": "raw",
+              "raw": "{{restockBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Mensaje SÍNCRONO (RPC)",
+      "description": "request-reply sobre RabbitMQ: cola inventario.consulta-stock, reply_to + correlation_id, timeout 3 s.",
+      "item": [
+        {
+          "name": "Consultar stock por RabbitMQ → 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/inventory/stock-check/ANI-SOL-001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "inventory",
+                "stock-check",
+                "ANI-SOL-001"
+              ]
+            },
+            "description": "El backend espera la respuesta del consumidor (roundTripMs)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pausar consumidor de consultas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messaging/consumers/consumidor-consulta-stock/pause",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messaging",
+                "consumers",
+                "consumidor-consulta-stock",
+                "pause"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar stock sin consumidor → 504 (a los 3 s)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/inventory/stock-check/ANI-SOL-001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "inventory",
+                "stock-check",
+                "ANI-SOL-001"
+              ]
+            },
+            "description": "Nadie responde: vence el timeout. Debilidad del síncrono."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 504\", () => pm.response.to.have.status(504));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reanudar consumidor de consultas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messaging/consumers/consumidor-consulta-stock/resume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messaging",
+                "consumers",
+                "consumidor-consulta-stock",
+                "resume"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Mensaje ASÍNCRONO",
+      "description": "Reporte de inventario: 202 inmediato, se procesa en segundo plano (exchange topic charmeetchic.notificaciones, routing key notificacion.reporte.inventario).",
+      "item": [
+        {
+          "name": "Pedir reporte → 202 Accepted",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/inventory/async",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "inventory",
+                "async"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));",
+                  "pm.collectionVariables.set(\"reportId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Estado del reporte → COMPLETADO",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/async/{{reportId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "async",
+                "{{reportId}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. PUBLISH / SUBSCRIBE (fanout)",
+      "description": "Una venta se publica UNA vez en charmeetchic.ventas (fanout) y la reciben 2 colas: ventas.auditoria y ventas.metricas. Esta misma venta deja el Estuche en 4 → alerta de stock bajo (exchange direct).",
+      "item": [
+        {
+          "name": "Crear orden (venta)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingAddress\": \"Av. Demo 123, Colina\",\n  \"items\": [ { \"productId\": {{productId}}, \"quantity\": {{qtyCruceUmbral}} } ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Suscriptor 1: auditoría de ventas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/sales-audit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "sales-audit"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Suscriptor 2: métricas de ventas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/sales-metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "sales-metrics"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. ACK manual",
+      "description": "Mostrar en los logs 'intento 1/3 -> ACK (procesado)' y en la consola Unacked = 0. Esta auditoría la escribe el consumidor de inventario.movimientos antes de confirmar con ACK.",
+      "item": [
+        {
+          "name": "Auditoría de movimientos de stock (escrita por el consumidor)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/stock-movements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "stock-movements"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. DLX / DLQ",
+      "description": "Reintentos 1/3, 2/3, 3/3 → NACK sin reencolar → charmeetchic.dlx → notificaciones.reportes.dlq (header x-death).",
+      "item": [
+        {
+          "name": "Error transitorio → 3 intentos y DLQ",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/inventory/async",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "inventory",
+                "async"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"simularError\": \"TRANSITORIO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));",
+                  "pm.collectionVariables.set(\"failedReportId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Estado → FALLIDO (esperar ~4 s)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/async/{{failedReportId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "async",
+                "{{failedReportId}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mensaje inválido → DLQ directo, sin reintentos",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/inventory/async",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "inventory",
+                "async"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"simularError\": \"INVALIDO\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Error que se recupera al 2º intento → ACK",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/reports/inventory/async",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "reports",
+                "inventory",
+                "async"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"simularError\": \"TRANSITORIO_UNA_VEZ\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Retención",
+      "description": "Mostrar en la consola la columna Features (D, Lim, TTL, DLX, DLK) y en application.yml la sección retention. Esta lista trae los argumentos de cada cola.",
+      "item": [
+        {
+          "name": "Listar colas con sus argumentos (x-max-length, x-overflow, TTL)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/queues",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "queues"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. Alertas",
+      "description": "Alerta operacional: DLQ_CON_MENSAJES (por el paso 5). Purgar la DLQ en la consola y volver a consultar → se resuelve. Alerta de negocio: 'ALERTA STOCK BAJO' en el log tras el paso 3.",
+      "item": [
+        {
+          "name": "Ver alertas ahora (refresh)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/alerts?refresh=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "alerts"
+              ],
+              "query": [
+                {
+                  "key": "refresh",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Productos con stock bajo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/products/low-stock",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "products",
+                "low-stock"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. DURABILIDAD (dejar al final)",
+      "description": "1) pausar → 2) vender → consola: inventario.movimientos con 1 mensaje Ready y 0 consumidores → 3) en la terminal del Codespace: docker compose -p charmeetchic-prod restart rabbitmq1 → el mensaje sigue ahí → 4) reanudar → se procesa con ACK.",
+      "item": [
+        {
+          "name": "Ver consumidores y su estado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messaging/consumers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messaging",
+                "consumers"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pausar consumidor de movimientos",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messaging/consumers/consumidor-movimientos/pause",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messaging",
+                "consumers",
+                "consumidor-movimientos",
+                "pause"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Vender 1 unidad (el mensaje queda en la cola)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingAddress\": \"Av. Demo 123, Colina\",\n  \"items\": [ { \"productId\": {{productId}}, \"quantity\": 1 } ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reanudar consumidor de movimientos (después del restart)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/messaging/consumers/consumidor-movimientos/resume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "messaging",
+                "consumers",
+                "consumidor-movimientos",
+                "resume"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "9. EP3 – Microservicio administrador (rabbit-admin)",
+      "description": "POST/DELETE de colas, exchanges y bindings, validación con Bean Validation y protección de recursos del sistema. Correr en orden; al final borra lo creado.",
+      "item": [
+        {
+          "name": "Crear exchange topic demo → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/exchanges",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "exchanges"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"demo.exchange\",\n  \"type\": \"topic\",\n  \"durable\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Crear cola demo → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/queues",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "queues"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"demo.cola\",\n  \"durable\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Crear binding demo → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bindings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bindings"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"exchange\": \"demo.exchange\",\n  \"queue\": \"demo.cola\",\n  \"routingKey\": \"demo.#\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validación: nombre vacío → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/queues",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "queues"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Validación: tipo inválido → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/exchanges",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "exchanges"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"demo.malo\",\n  \"type\": \"inventado\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Protegido: borrar cola del sistema → 403",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/queues/inventario.movimientos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "queues",
+                "inventario.movimientos"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrar binding demo → 204",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/bindings?exchange=demo.exchange&queue=demo.cola&routingKey=demo.%23",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "bindings"
+              ],
+              "query": [
+                {
+                  "key": "exchange",
+                  "value": "demo.exchange"
+                },
+                {
+                  "key": "queue",
+                  "value": "demo.cola"
+                },
+                {
+                  "key": "routingKey",
+                  "value": "demo.%23"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrar cola demo → 204",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/queues/demo.cola",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "queues",
+                "demo.cola"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Borrar exchange demo → 204",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/exchanges/demo.exchange",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "exchanges",
+                "demo.exchange"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10. Kafka",
+      "description": "EP5 – Streaming con Kafka (3 Zookeeper + 3 brokers). Correr en orden: métricas, compra real, simulación, demo de LAG (pausar/reanudar), DLT (validación, JSON, transitorio), segundo grupo, kafka-admin (tópicos y consumer groups) y reset de offsets. Usa el mismo {{baseUrl}} (gateway) y {{token}} (ADMIN).",
+      "item": [
+        {
+          "name": "Métricas iniciales (contrato del dashboard)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "metrics"
+              ]
+            },
+            "description": "Contrato EXACTO que usa el frontend: generadoEn, ventasUltimoMinuto, ventasTotales, ingresosTotales, topProductos, stockCritico, ultimosEventos."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"Trae todos los campos del contrato\", () => [\"generadoEn\",\"ventasUltimoMinuto\",\"ventasTotales\",\"ingresosTotales\",\"topProductos\",\"stockCritico\",\"ultimosEventos\"].forEach(k => pm.expect(j).to.have.property(k)));",
+                  "pm.collectionVariables.set(\"ventasAntes\", j.ventasTotales);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consumidores: grupos y particiones asignadas",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/consumers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "consumers"
+              ]
+            },
+            "description": "metricas-ventas: 3 consumidores, UNA partición cada uno. historial-ventas: 1 consumidor con las 3 particiones. Dentro de un grupo las particiones se reparten."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json().find(l => l.id === \"metricas-ventas\");",
+                  "pm.test(\"metricas-ventas abre 3 consumidores\", () => pm.expect(m.concurrencia).to.eql(3));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Compra REAL → evento a ventas.eventos e inventario.stock",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "orders"
+              ]
+            },
+            "description": "Una orden real publica (tras el commit) en RabbitMQ Y en Kafka: VentaEvent (key = id de la orden) y un StockEvent por producto (key = sku).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingAddress\": \"Demo Kafka 123\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get(\"productId\")) pm.collectionVariables.set(\"productId\", \"1\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Métricas tras la compra (ventasTotales +1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "metrics"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000); // espera a que los consumidores procesen"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"ventasTotales subió\", () => pm.expect(j.ventasTotales).to.be.above(Number(pm.collectionVariables.get(\"ventasAntes\") || 0)));",
+                  "pm.test(\"El feed muestra la venta y el cambio de stock\", () => pm.expect(j.ultimosEventos.map(e => e.tipo)).to.include.members([\"VENTA_CREADA\"]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Simular 200 ventas (el dashboard se mueve)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/simulate?ventas=200",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "simulate"
+              ],
+              "query": [
+                {
+                  "key": "ventas",
+                  "value": "200"
+                }
+              ]
+            },
+            "description": "Ventas sintéticas VÁLIDAS (productos y precios reales, origen=SIMULACION) publicadas solo en Kafka: no tocan la BD ni el stock."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"Publicó 200\", () => pm.expect(pm.response.json().ventasPublicadas).to.eql(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "LAG 1/4 · Pausar metricas-ventas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/consumers/metricas-ventas/pause",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "consumers",
+                "metricas-ventas",
+                "pause"
+              ]
+            },
+            "description": "El consumidor sigue en su grupo (sin rebalanceo) pero deja de pedir mensajes."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Quedó pausado\", () => pm.expect(pm.response.json().pausado).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "LAG 2/4 · Simular 300 ventas con el grupo pausado",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/simulate?ventas=300",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "simulate"
+              ],
+              "query": [
+                {
+                  "key": "ventas",
+                  "value": "300"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 2000); // espera a que los consumidores procesen"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "LAG 3/4 · Ver el lag en kafka-admin (sube)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/consumer-groups/metricas-ventas",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "consumer-groups",
+                "metricas-ventas"
+              ]
+            },
+            "description": "Lag = fin del log - offset confirmado, por partición. historial-ventas NO está pausado: su lag sigue en 0 (grupos independientes)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 2000); // espera a que los consumidores procesen"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Hay lag\", () => pm.expect(pm.response.json().lagTotal).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "LAG 4/4 · Reanudar metricas-ventas",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/consumers/metricas-ventas/resume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "consumers",
+                "metricas-ventas",
+                "resume"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Reanudado\", () => pm.expect(pm.response.json().pausado).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lag tras reanudar (vuelve a 0)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/consumer-groups/metricas-ventas",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "consumer-groups",
+                "metricas-ventas"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 4000); // espera a que los consumidores procesen"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Lag en 0\", () => pm.expect(pm.response.json().lagTotal).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DLT 1/4 · Evento que no pasa la validación",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/simulate?ventas=0&defectuoso=true&tipoDefecto=VALIDACION",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "simulate"
+              ],
+              "query": [
+                {
+                  "key": "ventas",
+                  "value": "0"
+                },
+                {
+                  "key": "defectuoso",
+                  "value": "true"
+                },
+                {
+                  "key": "tipoDefecto",
+                  "value": "VALIDACION"
+                }
+              ]
+            },
+            "description": "Sin ítems y total negativo: no recuperable → .DLT directo, sin reintentos (en los 2 grupos de ventas)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DLT 2/4 · Bytes que no son JSON",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/simulate?ventas=0&defectuoso=true&tipoDefecto=JSON",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "simulate"
+              ],
+              "query": [
+                {
+                  "key": "ventas",
+                  "value": "0"
+                },
+                {
+                  "key": "defectuoso",
+                  "value": "true"
+                },
+                {
+                  "key": "tipoDefecto",
+                  "value": "JSON"
+                }
+              ]
+            },
+            "description": "El ErrorHandlingDeserializer lo atrapa (no tumba al consumidor) → .DLT con los bytes originales."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DLT 3/4 · Fallo transitorio (3 intentos y luego .DLT)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/simulate?ventas=0&defectuoso=true&tipoDefecto=TRANSITORIO",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "simulate"
+              ],
+              "query": [
+                {
+                  "key": "ventas",
+                  "value": "0"
+                },
+                {
+                  "key": "defectuoso",
+                  "value": "true"
+                },
+                {
+                  "key": "tipoDefecto",
+                  "value": "TRANSITORIO"
+                }
+              ]
+            },
+            "description": "Venta válida que metricas-ventas no logra procesar: 1 intento + 2 reintentos con backoff de 1 s → .DLT. historial-ventas la procesa sin problema."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 202\", () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DLT 4/4 · El feed muestra los mensajes apartados",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "metrics"
+              ]
+            },
+            "description": "monitor-dlt lee ventas.eventos.DLT y muestra grupo y motivo (header x-dlt-motivo). En Kafka UI se ven los headers kafka_dlt-*."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 5000); // espera a que los consumidores procesen"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Hay eventos DLT\", () => pm.expect(pm.response.json().ultimosEventos.map(e => e.tipo)).to.include(\"DLT\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Historial (2.º grupo sobre ventas.eventos)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/historial",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "historial"
+              ]
+            },
+            "description": "historial-ventas recibe los MISMOS mensajes que metricas-ventas, con offsets propios. porParticion muestra que su único consumidor lee las 3 particiones."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Listar tópicos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ventas.eventos está protegido\", () => pm.expect(pm.response.json().find(t => t.name === \"ventas.eventos\").protegido).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Describir ventas.eventos (líderes e ISR)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics/ventas.eventos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics",
+                "ventas.eventos"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json();",
+                  "pm.test(\"3 particiones y RF 3\", () => { pm.expect(t.partitions.length).to.eql(3); pm.expect(t.replicationFactor).to.eql(3); });",
+                  "pm.test(\"Todas las réplicas en sincronía\", () => t.partitions.forEach(p => pm.expect(p.isr.length).to.eql(3)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Crear tópico de prueba → 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"demo.kafka.prueba\",\n  \"partitions\": 3,\n  \"replicationFactor\": 3,\n  \"configs\": {\n    \"retention.ms\": \"3600000\",\n    \"cleanup.policy\": \"delete\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Modificar configs (retention.ms, cleanup.policy)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics/demo.kafka.prueba/configs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics",
+                "demo.kafka.prueba",
+                "configs"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"configs\": {\n    \"retention.ms\": \"60000\",\n    \"cleanup.policy\": \"compact\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Quedó compactado\", () => pm.expect(pm.response.json().configs[\"cleanup.policy\"]).to.eql(\"compact\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Aumentar particiones a 6",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics/demo.kafka.prueba/partitions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics",
+                "demo.kafka.prueba",
+                "partitions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"totalPartitions\": 6\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"6 particiones\", () => pm.expect(pm.response.json().partitions.length).to.eql(6));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Config inválida → 400",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics/demo.kafka.prueba/configs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics",
+                "demo.kafka.prueba",
+                "configs"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"configs\": {\n    \"retention.ms\": \"siete dias\",\n    \"foo.bar\": \"1\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 400\", () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Borrar tópico del sistema → 403",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics/ventas.eventos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics",
+                "ventas.eventos"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Borrar tópico de prueba → 200",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/topics/demo.kafka.prueba",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "topics",
+                "demo.kafka.prueba"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "kafka-admin · Listar consumer groups",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/consumer-groups",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "consumer-groups"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset 1/4 · Resetear con el grupo activo → 409",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/consumer-groups/historial-ventas/reset-offsets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "consumer-groups",
+                "historial-ventas",
+                "reset-offsets"
+              ]
+            },
+            "description": "Kafka no permite mover offsets de un grupo con consumidores conectados (pausar no basta).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"topic\": \"ventas.eventos\",\n  \"strategy\": \"EARLIEST\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 409\", () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset 2/4 · Detener historial-ventas (sale del grupo)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/consumers/historial-ventas/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "consumers",
+                "historial-ventas",
+                "stop"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset 3/4 · Resetear a EARLIEST (reprocesar todo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/kafka-admin/consumer-groups/historial-ventas/reset-offsets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "kafka-admin",
+                "consumer-groups",
+                "historial-ventas",
+                "reset-offsets"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"topic\": \"ventas.eventos\",\n  \"strategy\": \"EARLIEST\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3000); // espera a que los consumidores procesen"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"El lag ahora es todo el log\", () => pm.expect(pm.response.json().lagTotal).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset 4/4 · Iniciar historial-ventas (relee desde el inicio)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/streaming/consumers/historial-ventas/start",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "streaming",
+                "consumers",
+                "historial-ventas",
+                "start"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Responde 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
