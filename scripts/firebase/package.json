@@ -1,0 +1,14 @@
+{
+  "name": "charmeetchic-scripts-firebase",
+  "private": true,
+  "description": "Scripts de administración de Firebase para charmeetchic-api (no los usa la API Java).",
+  "scripts": {
+    "add-admin": "node addAdmin.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.1"
+  }
+}

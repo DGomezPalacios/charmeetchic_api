@@ -65,3 +65,20 @@ updates:
       - "docker"
     commit-message:
       prefix: "build(deps)"
+
+  # Script de administración de Firebase (scripts/firebase/addAdmin.js). No forma parte de la API ni de la
+  # imagen Docker, pero sus dependencias (firebase-admin y su árbol) también reciben avisos de seguridad.
+  - package-ecosystem: "npm"
+    directory: "/scripts/firebase"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "build(deps)"

@@ -26,10 +26,8 @@ docs/
 *.md
 postman/
 
-# Scripts de Node que no usa la API (alta de administradores)
-addAdmin.js
-package.json
-package-lock.json
+# Scripts de Node que no usa la API (scripts/firebase: alta de administradores) y sus dependencias
+scripts/
 node_modules/
 
 # IDE, herramientas locales y sistema operativo

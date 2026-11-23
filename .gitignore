@@ -74,6 +74,7 @@ serviceAccountKey*.json
 *-firebase-adminsdk-*.json
 .firebaserc
 
-# ---- Node (addAdmin.js) y clave de cuenta de servicio con otro nombre (NUNCA versionar) ----
+# ---- Node (scripts/firebase) y clave de cuenta de servicio con otro nombre (NUNCA versionar) ----
+# Sin "/" inicial: también aplican dentro de scripts/firebase/ (node_modules y la clave junto al script).
 node_modules/
 *-admin-key.json
