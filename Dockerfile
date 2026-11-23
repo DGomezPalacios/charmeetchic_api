@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Imagen del microservicio charmeetchic-api (Spring Boot 3.2, Java 17).
+# Imagen del microservicio charmeetchic-api (Spring Boot 3.5, Java 17).
 #
 #   docker build -t charmeetchic-api:local .
 #   docker run -d -p 8080:8080 charmeetchic-api:local
@@ -26,10 +26,12 @@ COPY src ./src
 RUN mvn -B -q package -DskipTests \
     && cp target/charmeetchic-api-*.jar app.jar
 
-# Layered jar: Spring Boot 3.2 usa el modo layertools (jarmode=tools llegó en 3.3).
+# Layered jar con el modo tools (jarmode=layertools está obsoleto desde Spring Boot 3.3).
 # Separa el JAR en carpetas que van de lo que menos cambia a lo que más cambia:
 # dependencies, spring-boot-loader, snapshot-dependencies y application.
-RUN java -Djarmode=layertools -jar app.jar extract --destination extracted
+# --layers: una carpeta por capa. --launcher: deja el contenido con la estructura que espera JarLauncher
+# (BOOT-INF/, META-INF/, org/springframework/boot/loader/), igual que hacía layertools.
+RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
 # ---------- Etapa 2: ejecución (solo JRE, imagen liviana) ----------
 # Variante alpine: JRE 17 sobre Alpine (musl). La app es Java puro (Spring Web, JPA, H2 en
@@ -62,5 +64,5 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
     CMD wget -q -O /dev/null http://localhost:8080/api/health || exit 1
 
 # `exec` reemplaza al shell por la JVM (PID 1), así recibe SIGTERM y se apaga ordenadamente.
-# JarLauncher (paquete loader.launch desde Boot 3.2) arranca la app desde las capas extraídas.
+# JarLauncher (paquete loader.launch desde Boot 3.2) arranca la app desde las capas extraídas con --launcher.
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
