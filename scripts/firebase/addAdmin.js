@@ -1,8 +1,12 @@
 const admin = require('firebase-admin');
 const fs = require('fs');
+const path = require('path');
 
-// Leer el archivo JSON
-const keyPath = './charme-et-chic-firebase-admin-key.json';
+// Clave de la cuenta de servicio (ignorada por git y por Docker). Por defecto se busca junto a este script
+// (scripts/firebase/), sin importar desde qué carpeta se ejecute; FIREBASE_ADMIN_KEY permite indicar otra ruta.
+const keyPath = process.env.FIREBASE_ADMIN_KEY
+  ? path.resolve(process.env.FIREBASE_ADMIN_KEY)
+  : path.join(__dirname, 'charme-et-chic-firebase-admin-key.json');
 if (!fs.existsSync(keyPath)) {
   console.error('❌ Archivo no encontrado:', keyPath);
   process.exit(1);
@@ -18,7 +22,7 @@ try {
 
   // setCustomUserClaims recibe el UID, no el email: primero se busca al usuario por email.
   // La cuenta debe existir en Firebase (basta con haber iniciado sesión una vez con Google).
-  // Uso: node addAdmin.js [email]
+  // Uso (desde scripts/firebase/): node addAdmin.js [email]
   const email = process.argv[2] || 'danigp.93@gmail.com';
 
   admin.auth().getUserByEmail(email)
