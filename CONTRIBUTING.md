@@ -82,6 +82,8 @@ tipo(scope): descripción
 | `errors` | Manejo uniforme de errores (`GlobalExceptionHandler`, `ApiError`). |
 | `security` | Seguridad del pipeline: permisos del workflow, SonarCloud, Trivy. Se usa con `ci` y `docs`. |
 | `deps` | Actualización de dependencias (`build(deps)` para Maven y Docker, `ci(deps)` para actions). Lo usa Dependabot. |
+| `db` | Base de datos: PostgreSQL y el perfil `k8s` (`application-k8s.yml`), `data.sql`. |
+| `k8s` | Orquestación con Kubernetes: manifiestos de `k8s/` (Kustomize), el job `k8s-validate` del CI y `docs/kubernetes.md`. Se usa con `feat`, `ci` y `docs`. |
 
 ### Ejemplos reales (`git log`)
 
@@ -220,7 +222,9 @@ sola prueba rápida.
 | Resumen de tests y cobertura | bash + awk sobre los reportes | Siempre se ejecuta: publica en el *Job Summary* los tests por tipo y la cobertura de líneas y ramas. |
 | Subir artefactos | `actions/upload-artifact` | Siempre se ejecuta: `reportes-tests` (surefire + failsafe), `reporte-cobertura` (HTML de JaCoCo) y el JAR. |
 
-Luego el job `docker-build` construye la imagen y verifica que el contenedor quede `healthy`.
+Luego el job `docker-build` construye la imagen y verifica que el contenedor quede `healthy`, y en paralelo el job
+`k8s-validate` renderiza los manifiestos de `k8s/` con `kustomize build` y los valida con `kubeconform -strict`
+(ver [docs/kubernetes.md](docs/kubernetes.md)).
 
 ### Cobertura y umbrales
 
@@ -335,11 +339,19 @@ frenar todo el flujo por cada aviso nuevo.
 charmeetchic_api/
 ├── .github/
 │   ├── workflows/
-│   │   └── ci.yml                    Pipeline de CI (tests, cobertura, SonarCloud, imagen Docker + Trivy)
+│   │   └── ci.yml                    Pipeline de CI (tests, cobertura, SonarCloud, imagen Docker + Trivy, manifiestos k8s)
 │   ├── dependabot.yml                Actualizaciones automáticas de dependencias (Maven, Docker, Actions, npm)
 │   └── pull_request_template.md      Plantilla obligatoria de PR
 ├── docs/
+│   ├── kubernetes.md                 Arquitectura en Kubernetes, despliegue en kind y justificación de parámetros
 │   └── workflow.md                   Diagramas del flujo GitFlow y del pipeline
+├── k8s/                              Manifiestos de Kubernetes (Kustomize)
+│   ├── kind-config.yaml              Clúster local kind: 1 control-plane + 2 workers (Kubernetes 1.35.8)
+│   ├── base/                         Recursos comunes: Namespace, ConfigMap, Deployment, Service, HPA y PDB de la API;
+│   │                                 StatefulSet, Service headless y NetworkPolicy de PostgreSQL; Secret de EJEMPLO
+│   └── overlays/
+│       ├── dev/                      kind: recursos bajos, HPA 2-3, JWT local para pruebas
+│       └── prod/                     Producción: 3+ réplicas, HPA 3-10, PDB 2, más recursos y disco
 ├── scripts/
 │   └── firebase/                     Script Node.js de alta de administradores (addAdmin.js: claim ADMIN en
 │                                     Firebase). No lo usa la API ni entra en la imagen; Dependabot (npm) lo mantiene
@@ -358,8 +370,9 @@ charmeetchic_api/
 │   │   │   ├── filter/        Filtro que valida el JWT en cada request (JwtValidationFilter)
 │   │   │   └── exception/     Excepciones de negocio y manejador global de errores (ApiError)
 │   │   └── resources/
-│   │       ├── application.yml   Configuración de la aplicación (puerto, context-path /api, H2, Firebase)
-│   │       └── data.sql          Datos iniciales del catálogo
+│   │       ├── application.yml       Configuración de la aplicación (puerto, context-path /api, H2, Firebase)
+│   │       ├── application-k8s.yml   Perfil k8s: PostgreSQL desde variables de entorno (Kubernetes)
+│   │       └── data.sql              Datos iniciales del catálogo (idempotente, válido en H2 y PostgreSQL)
 │   └── test/
 │       └── java/com/charmeetchic/api/   Unitarias *Test (Mockito, surefire) e integración *IntegrationTest (MockMvc + H2, failsafe)
 ├── .trivyignore                      Riesgos aceptados de Trivy, con justificación y vencimiento
