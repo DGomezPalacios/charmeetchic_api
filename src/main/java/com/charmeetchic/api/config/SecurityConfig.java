@@ -37,7 +37,7 @@ import org.springframework.web.servlet.HandlerExceptionResolver;
  *   público   GET  /health, /products, /products/{id}, /products/search, /categories, /categories/{id}
  *   ADMIN     GET  /products/low-stock
  *   ADMIN     POST/PUT/DELETE /products/**, /categories/**
- *   ADMIN     PUT  /orders/{id}/status;   ADMIN  /reports/**
+ *   ADMIN     PUT  /orders/{id}/status;   ADMIN  /reports/**;   ADMIN  /streaming/**
  *   USER      /orders/**   (ADMIN también tiene ROLE_USER)
  *   autenticado  /profile
  * </pre>
@@ -123,6 +123,8 @@ public class SecurityConfig {
                     auth.requestMatchers(path(HttpMethod.DELETE, "/categories/**")).hasRole(ADMIN);
 
                     auth.requestMatchers(path("/reports/**")).hasRole(ADMIN);
+                    // Streaming con Kafka (métricas, simulación, pausa de consumidores): panel de administración.
+                    auth.requestMatchers(path("/streaming/**")).hasRole(ADMIN);
 
                     auth.requestMatchers(path(HttpMethod.PUT, "/orders/*/status")).hasRole(ADMIN);
                     auth.requestMatchers(path("/orders/**")).hasRole(USER);
