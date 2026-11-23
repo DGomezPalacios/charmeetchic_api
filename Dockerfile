@@ -38,7 +38,7 @@ RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination 
 # memoria, JJWT), sin librerías nativas, así que corre sin problemas y la imagen pesa mucho menos
 # que la variante Ubuntu. Además trae BusyBox, que incluye wget para el HEALTHCHECK.
 # Fijada a JRE 17.0.21.1 (build 2) por tag exacto y digest, por el mismo motivo que la etapa de build.
-FROM eclipse-temurin:17.0.21.1_2-jre-alpine@sha256:2b4113ae80e31f103b284dd3bc3e008add670cf8555417b5b289fa1128f2f0a3
+FROM eclipse-temurin:24.0.2_12-jre-alpine@sha256:4044b6c87cb088885bcd0220f7dc7a8a4aab76577605fa471945d2e98270741f
 WORKDIR /app
 
 # Usuario de sistema sin privilegios: si la app se ve comprometida, no tiene root en el contenedor.
