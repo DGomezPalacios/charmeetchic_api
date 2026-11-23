@@ -2,11 +2,16 @@
 name: "CI - charmeetchic-api"
 
 # Eventos que disparan el workflow:
-# - push a la rama develop (integración continua en la rama de desarrollo)
-# - pull_request hacia main o develop (validación antes de fusionar cambios)
+# - pull_request hacia main o develop: validación antes de fusionar (tests, imagen, Trivy, manifiestos).
+# - push a develop: integración continua + publicación de la imagen + despliegue en "staging".
+# - push a main (merge de una release o un hotfix): lo mismo, desplegando en "production".
+# - push de un tag vX.Y.Z (release): publica la imagen con los tags de versión X.Y.Z y X.Y (no despliega:
+#   el commit etiquetado ya se desplegó al llegar a main).
+# Qué job corre en cada evento: tabla en docs/workflow.md.
 on:
   push:
-    branches: [develop]
+    branches: [develop, main]
+    tags: ['v*.*.*']
   pull_request:
     branches: [main, develop]
 
@@ -15,11 +20,13 @@ on:
 permissions:
   contents: read
 
-# Una sola ejecución en curso por PR (o por rama en los push): si llega un commit nuevo, la ejecución
-# anterior se cancela, porque ya valida un estado obsoleto y solo gastaría minutos de runner.
+# Una sola ejecución en curso por PR (o por rama/tag en los push). En un PR, un commit nuevo cancela la
+# ejecución anterior, que ya valida un estado obsoleto. En un push NO se cancela: cortar a la mitad la
+# publicación de una imagen o un despliegue dejaría el entorno en un estado intermedio; la ejecución nueva
+# espera a que termine la anterior.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Primer job: compila el proyecto, corre los tests y valida que el
@@ -168,7 +175,11 @@ jobs:
     timeout-minutes: 20
     # Los PRs desde forks no reciben secrets: el análisis no podría autenticarse. Los PRs de Dependabot
     # sí lo tienen, porque SONAR_TOKEN también está cargado como secret de Dependabot.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # En el push de un tag vX.Y.Z no corre: el commit etiquetado ya se analizó al llegar a main, y SonarCloud
+    # trataría el tag como una rama nueva.
+    if: >-
+      (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
+      || github.event.pull_request.head.repo.full_name == github.repository
 
     steps:
       # Historial completo: SonarCloud usa git blame para atribuir cada problema a su commit y
@@ -422,3 +433,129 @@ jobs:
             -kubernetes-version "$K8S_VERSION" \
             -schema-location default \
             rendered/dev.yaml rendered/prod.yaml k8s/base/postgres-secret.example.yaml
+
+  # Job publish-image: publica la imagen en GitHub Container Registry (ghcr.io) con trazabilidad completa.
+  # Solo en push (develop, main o un tag vX.Y.Z), NUNCA en pull_request: un PR no debe publicar artefactos, y un
+  # PR desde un fork no tiene permiso de escritura en el registro. Por eso no es un check requerido de los PRs.
+  # Corre después de build-and-test y docker-build: solo se publica una imagen que pasó los tests, el escaneo de
+  # Trivy y la verificación del contenedor.
+  publish-image:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, docker-build]
+    if: github.event_name == 'push'
+    timeout-minutes: 20
+    # Mínimo privilegio para este job:
+    #  - contents: read      -> checkout.
+    #  - packages: write     -> publicar la imagen en ghcr.io con el GITHUB_TOKEN (sin tokens personales).
+    #  - id-token: write     -> token OIDC con el que se firma la atestación de procedencia (Sigstore).
+    #  - attestations: write -> guardar la atestación en el repositorio.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    # Lo que necesita el job deploy para desplegar exactamente esta imagen.
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      sha-tag: ${{ steps.vars.outputs.sha_tag }}
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # GHCR exige el nombre en minúsculas (el dueño del repositorio tiene mayúsculas). sha-<7 caracteres>
+      # coincide con el tag que genera metadata-action (type=sha, format=short).
+      - name: Nombre de la imagen y tag inmutable
+        id: vars
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charmeetchic-api" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Login con el GITHUB_TOKEN del workflow (expira al terminar el job); no se guarda ninguna credencial.
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags de la imagen publicada:
+      #  - sha-<commit corto>: INMUTABLE, identifica exactamente el commit; es el que usa el despliegue.
+      #  - develop / main: el nombre de la rama; se mueve con cada push (lo último de cada entorno).
+      #  - X.Y.Z y X.Y: solo en un tag de Git vX.Y.Z (release). X.Y apunta a la última corrección de esa versión.
+      # Labels y anotaciones OCI (revision, source, version, created...) generadas por metadata-action.
+      # DOCKER_METADATA_ANNOTATIONS_LEVELS: las anotaciones van al manifiesto y al índice (con SBOM y
+      # provenance la imagen se publica como índice OCI).
+      - name: Metadatos de la imagen (tags, labels y anotaciones OCI)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      # Construye y publica. El cache de GitHub Actions (type=gha) es el mismo que llenó docker-build, así que
+      # las capas se reutilizan y la imagen publicada corresponde a la que se escaneó y verificó.
+      #  - provenance mode=max: atestación SLSA de BuildKit (cómo, cuándo y desde qué commit se construyó).
+      #  - sbom: true: SBOM (lista de paquetes y JAR de la imagen) adjunto a la imagen en el registro.
+      - name: Construir y publicar la imagen
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      # Atestación de procedencia de GitHub (firmada con Sigstore) asociada al digest: permite verificar con
+      # `gh attestation verify oci://<imagen>@<digest> --repo <owner>/<repo>` que la imagen salió de este
+      # repositorio y de este workflow. push-to-registry: también la guarda junto a la imagen en ghcr.io.
+      - name: Atestación de procedencia (GitHub)
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ steps.vars.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publicar resumen de la imagen
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          SHA_TAG: ${{ steps.vars.outputs.sha_tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          {
+            echo "## Imagen publicada en GHCR"
+            echo
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Imagen | \`${IMAGE}\` |"
+            echo "| Tag inmutable | \`${SHA_TAG}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Commit | [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) |"
+            echo "| Ref | \`${GITHUB_REF}\` |"
+            echo "| org.opencontainers.image.version | \`${VERSION}\` |"
+            echo
+            echo "**Tags:**"
+            echo
+            while read -r tag; do echo "- \`${tag}\`"; done <<< "$TAGS"
+            echo
+            echo "Descargar por digest (inmutable): \`docker pull ${IMAGE}@${DIGEST}\`"
+            echo
+            echo "Verificar la procedencia: \`gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
