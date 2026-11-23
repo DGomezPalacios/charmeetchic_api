@@ -69,6 +69,23 @@ public class StreamingListenerControlService {
         return status(id);
     }
 
+    /**
+     * DETIENE el listener: a diferencia de pausar, sus consumidores SALEN del grupo (rebalanceo). Con el grupo
+     * vacío, kafka-admin puede resetear sus offsets (Kafka no permite moverlos con miembros conectados).
+     */
+    public ListenerStatus stop(String id) {
+        find(id).stop();
+        log.warn("Kafka: listener '{}' DETENIDO. Sus consumidores salieron del grupo (se pueden resetear offsets)", id);
+        return status(id);
+    }
+
+    /** Vuelve a iniciar un listener detenido: se une al grupo y sigue desde el offset confirmado. */
+    public ListenerStatus start(String id) {
+        find(id).start();
+        log.info("Kafka: listener '{}' INICIADO", id);
+        return status(id);
+    }
+
     private ListenerStatus status(String id) {
         MessageListenerContainer container = find(id);
         String[] topics = container.getContainerProperties().getTopics();

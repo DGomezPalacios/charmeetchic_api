@@ -180,6 +180,13 @@ class StreamingKafkaIntegrationTest {
                 .andExpect(status().isNotFound());
         mvc.perform(post("/streaming/simulate?ventas=999999").header("Authorization", bearer("ADMIN")))
                 .andExpect(status().isBadRequest());
+        // detener = salir del grupo (corriendo=false); iniciar = volver a unirse
+        mvc.perform(post("/streaming/consumers/monitor-dlt/stop").header("Authorization", bearer("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.corriendo").value(false));
+        mvc.perform(post("/streaming/consumers/monitor-dlt/start").header("Authorization", bearer("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.corriendo").value(true));
         mvc.perform(get("/streaming/historial").header("Authorization", bearer("ADMIN")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.grupo").value("historial-ventas"));

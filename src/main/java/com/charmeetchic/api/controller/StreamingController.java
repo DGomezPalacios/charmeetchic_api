@@ -31,6 +31,8 @@ import java.util.List;
  *   GET  /streaming/consumers                  listeners, grupos y particiones asignadas
  *   POST /streaming/consumers/{id}/pause       deja de consumir (el lag crece)
  *   POST /streaming/consumers/{id}/resume      vuelve a consumir (el lag baja)
+ *   POST /streaming/consumers/{id}/stop        sale del grupo (para resetear offsets con kafka-admin)
+ *   POST /streaming/consumers/{id}/start       vuelve a unirse al grupo
  * </pre>
  */
 @RestController
@@ -83,5 +85,17 @@ public class StreamingController {
     @PostMapping("/consumers/{id}/resume")
     public ResponseEntity<ListenerStatus> resume(@PathVariable String id) {
         return ResponseEntity.ok(listenerControl.resume(id));
+    }
+
+    /** POST /api/streaming/consumers/{id}/stop — sale del grupo (permite resetear offsets en kafka-admin). */
+    @PostMapping("/consumers/{id}/stop")
+    public ResponseEntity<ListenerStatus> stop(@PathVariable String id) {
+        return ResponseEntity.ok(listenerControl.stop(id));
+    }
+
+    /** POST /api/streaming/consumers/{id}/start */
+    @PostMapping("/consumers/{id}/start")
+    public ResponseEntity<ListenerStatus> start(@PathVariable String id) {
+        return ResponseEntity.ok(listenerControl.start(id));
     }
 }
