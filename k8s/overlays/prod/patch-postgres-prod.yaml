@@ -1,0 +1,28 @@
+# PostgreSQL en producción: más recursos y más disco. (Para producción real se recomienda una base
+# administrada, como Cloud SQL o RDS, con respaldos automáticos y alta disponibilidad.)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

@@ -1,0 +1,20 @@
+# PodDisruptionBudget: limita las interrupciones VOLUNTARIAS (kubectl drain de un nodo para mantenimiento,
+# actualización del clúster, autoscaler de nodos). Kubernetes no expulsa un pod de la API si con eso
+# quedarían menos de 1 disponibles: la API nunca queda en cero por una operación de mantenimiento.
+# (No protege contra caídas involuntarias, como un nodo que se apaga; para eso están las 2+ réplicas.)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: charmeetchic-api
+  labels:
+    app.kubernetes.io/name: charmeetchic-api
+    app.kubernetes.io/component: api
+spec:
+  # Con minReplicas 2 en el HPA, siempre se puede sacar 1 pod a la vez: el drain avanza sin bloquearse.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: charmeetchic-api
+  # Un pod que ya está fallando (no Ready) se puede expulsar igual: no tiene sentido que un pod roto
+  # bloquee el drain de un nodo.
+  unhealthyPodEvictionPolicy: AlwaysAllow

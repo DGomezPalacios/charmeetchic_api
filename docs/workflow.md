@@ -81,6 +81,10 @@ flowchart TD
     G --> H["build-and-test en verde"]
     H --> S1["Job sonarcloud<br/>mvn verify + análisis SonarCloud"]
     H --> D1["Job docker-build<br/>build de la imagen (imágenes base fijadas)"]
+    H --> K1["Job k8s-validate<br/>kustomize build overlays dev y prod"]
+    K1 --> K2{"kubeconform -strict<br/>¿manifiestos válidos?"}
+    K2 -->|no| X
+    K2 -->|sí| H2
     S1 --> S2{"¿Quality gate OK?"}
     S2 -->|no| X
     S2 -->|sí| H2["Checks en verde"]
@@ -101,9 +105,10 @@ flowchart TD
 > el job falló, para poder diagnosticar el error. La política de umbrales está en
 > [CONTRIBUTING.md](../CONTRIBUTING.md#política-de-calidad).
 >
-> `sonarcloud` y `docker-build` corren en paralelo, ambos después de `build-and-test`. Los checks requeridos son
+> `sonarcloud`, `docker-build` y `k8s-validate` corren en paralelo, todos después de `build-and-test`. Los checks requeridos son
 > `build-and-test` y `docker-build`; `sonarcloud` bloquea el merge solo si se agrega como check requerido en la
-> protección de ramas. Las vulnerabilidades HIGH de Trivy se reportan sin bloquear. Detalle en
+> protección de ramas (lo mismo vale para `k8s-validate`, que conviene agregar como requerido para que un
+> manifiesto inválido no llegue a `develop`). Las vulnerabilidades HIGH de Trivy se reportan sin bloquear. Detalle en
 > [Política de seguridad](../CONTRIBUTING.md#política-de-seguridad).
 >
 > Fuera del workflow, **Dependabot** revisa cada semana Maven, Docker y las actions y abre PRs hacia `develop`, y
@@ -124,13 +129,13 @@ flowchart TD
 
 ## Steps de `.github/workflows/ci.yml`
 
-El workflow tiene tres jobs que corren en `ubuntu-latest`. Configuración común a todos:
+El workflow tiene cuatro jobs que corren en `ubuntu-latest`. Configuración común a todos:
 
 - **`permissions: contents: read`** a nivel global: el `GITHUB_TOKEN` solo puede leer el código. Solo
   `docker-build` pide además `security-events: write`, para subir el SARIF de Trivy.
 - **`concurrency`** por PR (o por rama en los push) con `cancel-in-progress`: un commit nuevo cancela la ejecución
   anterior, que ya valida un estado obsoleto.
-- **`timeout-minutes: 20`** en cada job, para cortar un job colgado.
+- **`timeout-minutes`** en cada job (20; 10 en `k8s-validate`), para cortar un job colgado.
 - Las actions de terceros (`docker/*`, `aquasecurity/*`) están fijadas por el SHA completo del commit, con la versión
   en un comentario; Dependabot las actualiza. Las oficiales de GitHub (`actions/*`, `github/*`) usan tag de versión.
 
@@ -171,3 +176,16 @@ Job `docker-build` (`needs: build-and-test`):
    Trivy leen `.trivyignore` (`trivyignores`), donde se documentan los riesgos aceptados con fecha de vencimiento.
 5. **Subir SARIF a Code Scanning** (`github/codeql-action/upload-sarif@v4`, `if: always()`): los resultados quedan en
    *Security → Code scanning* aunque el gate haya fallado.
+
+Job `k8s-validate` (`needs: build-and-test`): valida los manifiestos de Kubernetes de `k8s/` sin necesitar un clúster.
+Detalle de los manifiestos en [kubernetes.md](kubernetes.md).
+
+1. **Checkout del código** (`actions/checkout@v4`).
+2. **Instalar kustomize y kubeconform**: descarga los binarios oficiales de sus releases de GitHub en versiones fijas
+   (kustomize `v5.8.3`, kubeconform `v0.8.0`) y verifica cada archivo contra su SHA-256 publicado (`sha256sum -c`)
+   antes de usarlo. No usa actions de terceros.
+3. **Renderizar overlays** (`kustomize build k8s/overlays/dev` y `.../prod`): falla si un patch no aplica, falta un
+   archivo o la base es inválida.
+4. **Validar manifiestos** (`kubeconform -strict -summary -kubernetes-version 1.35.8`): valida cada recurso contra el
+   esquema oficial de Kubernetes 1.35.8 (la versión del clúster kind). `-strict` rechaza campos inexistentes (por
+   ejemplo, una probe mal escrita) que `kubectl apply` ignoraría en silencio. También valida el Secret de ejemplo.

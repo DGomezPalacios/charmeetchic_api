@@ -1,0 +1,44 @@
+# -----------------------------------------------------------------------------
+# Overlay DEV: clúster local de kind (ver docs/kubernetes.md). Hereda k8s/base y baja los recursos para
+# que todo quepa en un PC. Requiere, además del Secret postgres-credentials, el Secret
+# charmeetchic-api-jwt-local (ver patch-api-dev.yaml).
+#
+#   kubectl apply -k k8s/overlays/dev
+# -----------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Imagen construida en el PC y cargada en los nodos de kind con `kind load docker-image charmeetchic-api:local`
+# (no hay registro). Con un tag distinto de "latest" e imagePullPolicy IfNotPresent, kind no intenta descargarla.
+images:
+  - name: charmeetchic-api
+    newTag: local
+
+# Se combina con el ConfigMap de la base (behavior: merge) y solo cambia lo que difiere.
+configMapGenerator:
+  - name: charmeetchic-api-config
+    behavior: merge
+    literals:
+      # En local no hay forma práctica de obtener ID tokens reales de Firebase para probar los endpoints
+      # de administración (crear productos). El modo local valida tokens HS256 firmados con un secreto
+      # propio (JWT_LOCAL_SECRET). SOLO desarrollo: el overlay prod mantiene JWT_MODE=firebase.
+      - JWT_MODE=local
+
+patches:
+  - path: patch-api-dev.yaml
+  - path: patch-postgres-dev.yaml
+  # HPA: mínimo 2 réplicas también en dev, para probar que comparten la base y el rolling update sin
+  # caída; máximo 3 para no saturar el PC (cada réplica reserva 512Mi).
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: charmeetchic-api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3

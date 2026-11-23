@@ -1,0 +1,44 @@
+# -----------------------------------------------------------------------------
+# Perfil "k8s": la API corriendo en Kubernetes con PostgreSQL (k8s/base/postgres-statefulset.yaml).
+# Se activa con SPRING_PROFILES_ACTIVE=k8s (lo define el ConfigMap del clúster). Solo sobrescribe lo
+# que cambia respecto de application.yml; H2 en memoria sigue siendo el default para desarrollo y tests.
+#
+# Por qué PostgreSQL: con H2 en memoria cada réplica (pod) tendría su propia base, así que un producto
+# creado a través de un pod no existiría en los demás. Todas las réplicas comparten esta base.
+# -----------------------------------------------------------------------------
+spring:
+  datasource:
+    # Variables de entorno, sin valores por defecto: si faltan, la app falla al arrancar en vez de
+    # conectarse a algo inesperado. DB_URL viene del ConfigMap; usuario y contraseña, del Secret.
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driverClassName: org.postgresql.Driver
+    hikari:
+      # 5 conexiones por réplica: con el máximo del HPA de prod (10 réplicas) son 50, bajo el
+      # max_connections = 100 por defecto de PostgreSQL (con margen para psql y el propio clúster).
+      maximum-pool-size: 5
+      # Si PostgreSQL no responde, falla rápido (la readinessProbe saca al pod del Service).
+      connection-timeout: 10000
+  jpa:
+    hibernate:
+      # create-drop (el default para H2) borraría las tablas cada vez que arranca o se apaga un pod,
+      # es decir, en cada rolling update o escalado. "update" crea las tablas la primera vez y luego
+      # solo agrega lo que falte, sin borrar datos. (Para producción real se recomienda Flyway/Liquibase.)
+      ddl-auto: update
+  sql:
+    init:
+      # Con una base que no es embebida, Spring Boot NO ejecuta data.sql por defecto (mode=embedded).
+      # "always" carga el catálogo inicial; data.sql es idempotente (INSERT ... WHERE NOT EXISTS),
+      # así que volver a ejecutarlo en cada arranque de cada réplica no duplica filas.
+      # Se puede desactivar con DB_INIT_MODE=never.
+      mode: ${DB_INIT_MODE:always}
+  h2:
+    console:
+      # La consola H2 no aplica con PostgreSQL y no debe quedar expuesta en el clúster.
+      enabled: false
+
+logging:
+  level:
+    # DEBUG es útil en desarrollo; en el clúster genera demasiado log.
+    com.charmeetchic: INFO

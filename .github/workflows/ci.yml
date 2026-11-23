@@ -343,3 +343,66 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-imagen
+
+  # Job k8s-validate: renderiza los manifiestos de Kubernetes (k8s/) con Kustomize y los valida contra los
+  # esquemas oficiales de la API de Kubernetes con kubeconform. Detecta antes del merge un campo mal escrito,
+  # un tipo incorrecto o un recurso que no existe en la versión de Kubernetes objetivo, sin necesitar un clúster.
+  # Corre en paralelo con docker-build y sonarcloud, después de build-and-test.
+  k8s-validate:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 10
+    env:
+      # Versiones fijas: el resultado no cambia porque salga una versión nueva de las herramientas.
+      KUSTOMIZE_VERSION: v5.8.3
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+      # Versión de Kubernetes cuyos esquemas se usan: la misma del clúster kind (k8s/kind-config.yaml).
+      K8S_VERSION: 1.35.8
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # Binarios oficiales de las releases de GitHub, sin actions de terceros. Cada descarga se verifica
+      # contra su SHA-256 publicado (checksums.txt / CHECKSUMS de la release): si el archivo fue alterado,
+      # sha256sum -c falla y el job se detiene antes de ejecutarlo.
+      - name: Instalar kustomize y kubeconform (versión fija + checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
+          curl -sSfL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          mkdir -p bin
+          tar -xzf kustomize.tar.gz -C bin kustomize
+          tar -xzf kubeconform.tar.gz -C bin kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # kustomize build de cada overlay: falla si un patch no aplica, falta un archivo o la base es inválida.
+      - name: Renderizar overlays (kustomize build)
+        run: |
+          set -euo pipefail
+          kustomize version
+          mkdir -p rendered
+          kustomize build k8s/overlays/dev  > rendered/dev.yaml
+          kustomize build k8s/overlays/prod > rendered/prod.yaml
+          echo "dev:  $(grep -c '^kind:' rendered/dev.yaml) recursos"
+          echo "prod: $(grep -c '^kind:' rendered/prod.yaml) recursos"
+
+      # kubeconform valida cada recurso contra el esquema JSON de su kind/apiVersion en Kubernetes $K8S_VERSION.
+      #  -strict: rechaza campos que no existen en el esquema (p. ej. "readinesProbe" mal escrito), que
+      #           kubectl ignoraría en silencio.
+      #  -summary: imprime el total de recursos válidos, inválidos y con error.
+      # También se valida el Secret de ejemplo, que no forma parte de ningún overlay.
+      - name: Validar manifiestos (kubeconform -strict)
+        run: |
+          kubeconform -v
+          kubeconform -strict -summary -output text \
+            -kubernetes-version "$K8S_VERSION" \
+            -schema-location default \
+            rendered/dev.yaml rendered/prod.yaml k8s/base/postgres-secret.example.yaml

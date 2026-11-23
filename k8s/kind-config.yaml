@@ -1,0 +1,24 @@
+# -----------------------------------------------------------------------------
+# Clúster local de Kubernetes con kind (Kubernetes IN Docker) para probar los manifiestos.
+#
+#   kind create cluster --config k8s/kind-config.yaml
+#
+# Ver docs/kubernetes.md para el despliegue completo paso a paso.
+# -----------------------------------------------------------------------------
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: charmeetchic
+
+# 1 control-plane + 2 workers: con dos nodos se ve que las réplicas de la API se reparten
+# (topologySpreadConstraints) y que el PodDisruptionBudget tiene sentido al vaciar (drain) un nodo.
+#
+# Imagen de nodo fijada por versión y digest (la lista oficial de kind v0.33.0). Kubernetes 1.35 queda
+# a una versión menor del kubectl local (1.34), dentro del desfase soportado, y coincide con la versión
+# de los esquemas con los que el CI valida los manifiestos (kubeconform -kubernetes-version 1.35.8).
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+  - role: worker
+    image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+  - role: worker
+    image: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0

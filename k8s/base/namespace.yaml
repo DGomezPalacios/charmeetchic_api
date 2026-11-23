@@ -1,0 +1,15 @@
+# Namespace propio: aísla los recursos de la aplicación (nombres, permisos, cuotas) del resto del clúster
+# y permite borrarlo todo de una vez con `kubectl delete namespace charmeetchic`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: charmeetchic
+  labels:
+    # Pod Security Admission en nivel "restricted" (el más estricto): el API server RECHAZA cualquier pod
+    # del namespace que corra como root, permita escalar privilegios, conserve capabilities o no use
+    # seccomp. Así los securityContext de los manifiestos no son una sugerencia sino un requisito.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    # warn/audit: kubectl avisa y el audit log registra cualquier incumplimiento.
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

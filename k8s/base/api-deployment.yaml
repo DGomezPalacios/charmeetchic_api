@@ -1,0 +1,204 @@
+# -----------------------------------------------------------------------------
+# Deployment de la API (Spring Boot). Los valores de aquí son los de referencia; los overlays
+# (k8s/overlays/dev y prod) ajustan réplicas, recursos e imagen por entorno.
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: charmeetchic-api
+  labels:
+    app.kubernetes.io/name: charmeetchic-api
+    app.kubernetes.io/component: api
+  annotations:
+    # Motivo del despliegue: aparece en la columna CHANGE-CAUSE de `kubectl rollout history`.
+    # El CI (o quien despliega) lo reemplaza por el commit/versión que se está desplegando.
+    kubernetes.io/change-cause: "Despliegue inicial desde k8s/base"
+spec:
+  # 2 réplicas iniciales: alta disponibilidad mínima (si un pod o un nodo cae, el otro sigue atendiendo).
+  # Después manda el HorizontalPodAutoscaler (api-hpa.yaml), que mueve este número entre su min y max.
+  replicas: 2
+  # Versiones anteriores que se guardan para `kubectl rollout undo`.
+  revisionHistoryLimit: 5
+  # Si un despliegue no avanza en 10 min (por ejemplo, la imagen no arranca), se marca como fallido.
+  progressDeadlineSeconds: 600
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: charmeetchic-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Despliegue sin caída: nunca se baja un pod viejo antes de que el nuevo esté Ready
+      # (maxUnavailable 0) y se crea de a un pod extra a la vez (maxSurge 1), así el clúster
+      # solo necesita capacidad para réplicas + 1 durante la actualización.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: charmeetchic-api
+        app.kubernetes.io/component: api
+        # Trazabilidad: versión de la aplicación (la del pom.xml) visible con `kubectl get pods -L ...`.
+        app.kubernetes.io/version: "0.0.1-SNAPSHOT"
+      annotations:
+        # Trazabilidad: commit del que se construyó la imagen. Al cambiar, cambia el template del pod y
+        # Kubernetes hace un rolling update. Se fija al desplegar (ver docs/kubernetes.md).
+        charmeetchic.cl/git-commit: "local"
+        charmeetchic.cl/source: "https://github.com/DGomezPalacios/charmeetchic_api"
+    spec:
+      # La API no habla con el API server de Kubernetes: no se monta el token de la ServiceAccount
+      # (un atacante que comprometa el pod no obtiene credenciales del clúster).
+      automountServiceAccountToken: false
+      # No inyecta variables de entorno con los Services del namespace (POSTGRES_PORT=tcp://...), que
+      # además podrían chocar con las variables que lee Spring.
+      enableServiceLinks: false
+      # Tiempo máximo entre SIGTERM y SIGKILL. Debe cubrir el preStop (10 s) + el apagado ordenado de
+      # Spring (spring.lifecycle.timeout-per-shutdown-phase = 20 s) con margen: 10 + 20 = 30 < 40.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        # Contexto de seguridad del pod (exigido por el nivel "restricted" del namespace).
+        runAsNonRoot: true
+        # 1001 = usuario "app" creado en el Dockerfile; nunca root.
+        runAsUser: 1001
+        runAsGroup: 1001
+        # Grupo dueño de los volúmenes montados (el emptyDir de /tmp).
+        fsGroup: 1001
+        # Filtro de llamadas al sistema por defecto del runtime: bloquea syscalls peligrosas.
+        seccompProfile:
+          type: RuntimeDefault
+      # Reparte las réplicas entre nodos: si un nodo cae, no se lleva todas las réplicas con él.
+      # ScheduleAnyway: es una preferencia; con un solo nodo los pods igual se programan.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: charmeetchic-api
+      initContainers:
+        # Espera a que PostgreSQL acepte conexiones antes de arrancar la API. Sin esto, en el primer
+        # despliegue la API arrancaría antes que la base, fallaría al conectarse y entraría en
+        # CrashLoopBackOff hasta que PostgreSQL esté listo. Usa la misma imagen de PostgreSQL (ya
+        # descargada en el nodo) solo por su cliente pg_isready.
+        - name: wait-for-postgres
+          image: postgres:17.12-alpine3.24@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -p 5432 -U "$PGUSER" -d charmeetchic -t 2; do
+                echo "PostgreSQL aún no está listo; reintentando en 2 s..."
+                sleep 2
+              done
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: api
+          # Nombre lógico: cada overlay fija el registro y el tag (bloque `images` de su kustomization).
+          image: charmeetchic-api
+          # La imagen se carga en el nodo (kind load) o se descarga solo si falta: un tag fijo no cambia.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # SPRING_PROFILES_ACTIVE=k8s, DB_URL, FIREBASE_PROJECT_ID y JAVA_OPTS (configMapGenerator de
+          # kustomization.yaml). El nombre lleva un hash del contenido: si cambia la configuración, cambia
+          # el nombre y Kubernetes hace un rolling update para que los pods la lean.
+          envFrom:
+            - configMapRef:
+                name: charmeetchic-api-config
+          env:
+            # Credenciales de PostgreSQL desde el Secret (nunca en el ConfigMap ni en el repositorio).
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+          resources:
+            # requests: lo que el scheduler reserva en el nodo y la base del 70 % de CPU del HPA.
+            # 250m alcanzan para atender tráfico normal; el arranque usa más (hasta el límite de 1 CPU).
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              # Límite de CPU holgado (4x el request) para que Spring Boot arranque rápido.
+              cpu: "1"
+              # Memoria: request = limit, así el pod no se sobrecompromete y el heap es predecible.
+              # JAVA_OPTS usa -XX:MaxRAMPercentage=70.0 -> heap máx. ~537 Mi; el 30 % restante (~230 Mi)
+              # queda para metaspace, threads, buffers y el código compilado (JIT), fuera del heap.
+              memory: 768Mi
+          # startupProbe: mientras no responde, las otras dos probes no corren. Tolera hasta
+          # 5 s x 36 = 180 s de arranque (Spring Boot + Hibernate con CPU limitada en un nodo de kind),
+          # sin tener que poner un initialDelaySeconds grande en la liveness.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 36
+          # readinessProbe: si falla, el pod sale de los endpoints del Service (no recibe tráfico) pero
+          # NO se reinicia. 3 fallos seguidos (30 s) antes de sacarlo, para no reaccionar a un pico puntual.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+          # livenessProbe: si falla, el kubelet REINICIA el contenedor (JVM colgada, deadlock). Más
+          # tolerante que la readiness (3 x 20 s = 60 s) para no reiniciar un pod que solo está lento.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            # Al borrar un pod, Kubernetes lo saca de los endpoints del Service y manda SIGTERM casi al
+            # mismo tiempo; kube-proxy y los clientes tardan unos segundos en enterarse. Esperar 10 s antes
+            # del SIGTERM evita que lleguen peticiones a un pod que ya se está apagando (errores 5xx en el
+            # rolling update). `sleep` es de BusyBox (imagen Alpine).
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Sistema de archivos de la imagen en solo lectura: un atacante no puede modificar el código ni
+            # dejar binarios. Lo único escribible es /tmp (emptyDir), que Tomcat y la JVM necesitan.
+            readOnlyRootFilesystem: true
+            # Sin ninguna capability de Linux: la app no necesita privilegios (escucha en 8080, > 1024).
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Directorio temporal de Tomcat (work dir, uploads) y de la JVM (hsperfdata). Se borra con el pod.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi

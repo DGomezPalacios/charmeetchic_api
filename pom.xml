@@ -28,8 +28,13 @@
              (jackson-core) y CVE-2026-68497, CVE-2026-91776 y CVE-2026-91777 (jackson-databind). Solo parches de la
              misma línea 2.21.x. Quitar cuando el Boot que se use ya traiga una versión igual o mayor. -->
         <jackson-bom.version>2.21.7</jackson-bom.version>
-        <!-- true = omite solo las pruebas unitarias (surefire); failsafe sigue corriendo. -->
-        <skipUTs>false</skipUTs>
+        <!-- Omisión de pruebas:
+             -DskipTests     omite todas (surefire y failsafe), por ejemplo en el build de Docker.
+             -DskipUTs=true  omite solo las unitarias (surefire); failsafe sigue corriendo (step de integración del CI).
+             skipUTs hereda el valor de skipTests: así -DskipTests también llega a surefire, cuya configuración
+             usa skipUTs (una configuración explícita en el pom tiene prioridad sobre la propiedad -DskipTests). -->
+        <skipTests>false</skipTests>
+        <skipUTs>${skipTests}</skipUTs>
         <!-- Umbrales de cobertura (política de calidad, ver CONTRIBUTING.md). Se fijan unos puntos bajo la
              cobertura medida: alcanzables, pero un retroceso real hace fallar `mvn verify`. -->
         <cobertura.lineas.min>0.93</cobertura.lineas.min>
@@ -84,6 +89,15 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Driver de PostgreSQL para el perfil "k8s" (application-k8s.yml): con varias réplicas en
+             Kubernetes todas deben compartir una base real; H2 en memoria daría una base por pod.
+             La versión la gestiona spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 
@@ -171,7 +185,8 @@
             <!-- Pruebas unitarias (fase test): todo excepto *IntegrationTest.
                  `mvn test` corre solo estas, así el feedback es rápido.
                  -DskipUTs=true las omite (el CI las corre en un step propio y luego ejecuta
-                 `mvn verify -DskipUTs=true` para no repetirlas). -->
+                 `mvn verify -DskipUTs=true` para no repetirlas). -DskipTests omite unitarias e integración
+                 (skipUTs hereda de skipTests, ver propiedades). -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
