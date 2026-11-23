@@ -907,3 +907,39 @@ jobs:
           name: gateway-surefire-reports
           path: gateway/target/surefire-reports/
           if-no-files-found: ignore
+
+  # Microservicio administrador de Kafka (app separada en kafka-admin/). Sus tests levantan un broker Kafka
+  # EMBEBIDO (en memoria): no necesita el clúster ni Docker para probar.
+  kafka-admin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: kafka-admin
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v6
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+          cache-dependency-path: kafka-admin/pom.xml
+
+      - name: Compilar y ejecutar tests (mvn verify)
+        run: mvn -B verify
+
+      # Verifica que el Dockerfile construye (no publica la imagen)
+      - name: Construir imagen Docker
+        run: docker build -t charmeetchic-kafka-admin .
+
+      - name: Subir reportes de tests
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kafka-admin-surefire-reports
+          path: kafka-admin/target/surefire-reports/
+          if-no-files-found: ignore
