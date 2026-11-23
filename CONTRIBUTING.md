@@ -84,6 +84,7 @@ tipo(scope): descripción
 | `deps` | Actualización de dependencias (`build(deps)` para Maven y Docker, `ci(deps)` para actions). Lo usa Dependabot. |
 | `db` | Base de datos: PostgreSQL y el perfil `k8s` (`application-k8s.yml`), `data.sql`. |
 | `k8s` | Orquestación con Kubernetes: manifiestos de `k8s/` (Kustomize), el job `k8s-validate` del CI y `docs/kubernetes.md`. Se usa con `feat`, `ci` y `docs`. |
+| `deploy` | Entrega continua: publicación de la imagen en GHCR (`publish-image`), despliegue automático (`deploy`), GitHub Environments y su documentación. Se usa con `ci` y `docs`. |
 
 ### Ejemplos reales (`git log`)
 
@@ -117,17 +118,39 @@ facilita la revisión (como en `feature/health-version` y `feature/filtro-precio
 4. Esperar el check `build-and-test` en verde y resolver la revisión.
 5. Mergear con **merge commit** (*Create a merge commit*), **no squash**: así se conservan los commits individuales
    (feat, test, docs, fix) y queda registrado en el historial qué rama entró y en qué PR.
+6. **El merge despliega en staging**: el push a `develop` corre el workflow completo; `publish-image` publica la
+   imagen en GHCR (tags `sha-<commit>` y `develop`) y `deploy` la despliega en el entorno **`staging`** (overlay dev)
+   y la verifica con un smoke test. Revisar que el workflow del push termine en verde (pestaña *Actions* o
+   *Deployments*); si falla, se corrige con un nuevo PR.
 
 ### develop → main (release)
 
-1. Abrir un PR de `develop` hacia `main` cuando el conjunto de funcionalidades está listo.
-2. Tras el merge, crear un **tag anotado** sobre el commit de merge en `main`:
+1. Abrir un PR de `develop` hacia `main` cuando el conjunto de funcionalidades está listo y **staging está en verde**
+   con ese mismo código (el último despliegue de `develop`).
+2. **El merge a `main` despliega en production**: el push a `main` publica la imagen (tags `sha-<commit>` y `main`) y
+   el job `deploy` la despliega en el entorno **`production`** (overlay prod: 3 réplicas, HPA 3-10, PDB 2). Si el
+   environment `production` tiene *Required reviewers*, el despliegue espera la aprobación en la pestaña *Actions*.
+3. Tras el merge, crear un **tag anotado** sobre el commit de merge en `main`. El push del tag vuelve a validar y
+   publica la misma imagen con los tags de versión `X.Y.Z` y `X.Y` (no vuelve a desplegar: ese commit ya está en
+   production):
 
    ```bash
    git checkout main && git pull
    git tag -a v1.0.0 -m "Primera versión estable: health con versión y filtro por precio"
    git push origin v1.0.0
    ```
+
+4. Si después de la release hubo cambios en `main` que no están en `develop` (un hotfix), hacer back-merge
+   `main → develop` para que ambas ramas no diverjan.
+
+| Paso | Rama | Entorno | Imagen en GHCR |
+|---|---|---|---|
+| Merge de un PR `feature/*` o `docs/*` | `develop` | `staging` | `sha-<commit>`, `develop` |
+| Merge de la release o de un hotfix | `main` | `production` | `sha-<commit>`, `main` |
+| Tag `vX.Y.Z` sobre `main` | — | (sin despliegue) | `X.Y.Z`, `X.Y` y `sha-<commit>` |
+
+Detalle de los jobs en [docs/workflow.md](docs/workflow.md#pipeline-de-cicd) y del despliegue en
+[docs/kubernetes.md](docs/kubernetes.md#despliegue-automático).
 
 ### hotfix/* → main → develop
 
@@ -137,9 +160,35 @@ lo que se corrige (`fix(...)` para código, `docs(...)` para documentación, etc
 1. Crear la rama desde `main`: `git checkout -b hotfix/firebase-project-id main`.
 2. Aplicar la corrección y abrir un PR hacia `main`. En este proyecto el hotfix corrige documentación, con el commit
    `docs(readme): corrige Project ID de Firebase por defecto en el README`.
-3. Tras el merge, crear el tag anotado de la versión de parche (`v1.0.1`).
+3. El merge a `main` despliega la corrección en **production** (job `deploy`). Tras el merge, crear el tag anotado de
+   la versión de parche (`v1.0.1`).
 4. Hacer **back-merge** de `main` a `develop` (PR `main → develop`) para que la corrección no se pierda en la
-   siguiente release.
+   siguiente release. Ese merge despliega en **staging**.
+
+### Control automático: `gitflow-guard`
+
+`main` es la rama por defecto del repositorio, así que GitHub la propone como base al abrir cualquier PR. Para que un
+descuido no lleve trabajo sin integrar directo a producción, el job **`gitflow-guard`** del
+[CI](.github/workflows/ci.yml) corre en cada PR hacia `main` y **falla si la rama de origen no es `develop` ni
+empieza con `hotfix/`**:
+
+| Rama de origen | PR hacia `main` | PR hacia `develop` |
+|---|---|---|
+| `develop` | ✅ permitido (release) | — |
+| `hotfix/*` | ✅ permitido (corrección urgente) | ✅ (back-merge) |
+| `feature/*`, `docs/*`, `fix/*` u otra | ❌ `gitflow-guard` en rojo | ✅ permitido |
+
+Si falla, el log y el *Job Summary* explican el motivo. La corrección es **cambiar la base del PR a `develop`**
+(botón *Edit* junto al título del PR → *base: develop*, o `gh pr edit <número> --base develop`); no hace falta cerrar
+el PR ni rehacer los commits. El job no necesita permisos del `GITHUB_TOKEN` (`permissions: {}`), no hace checkout y
+tiene un timeout de 2 minutos. El nombre de la rama se lee desde una variable de entorno, no interpolado en el
+script, para que un nombre de rama con caracteres de shell no se ejecute.
+
+**Incidente que lo motivó:** los PRs **#16** (`fix/skip-tests-docker`) y **#27** (`feature/k8s`) se fusionaron por
+error en `main` en vez de `develop`, porque se abrieron con la base por defecto. `main` quedó con cambios que nunca
+pasaron por `develop` (rama que se quedó atrás, sin `k8s/` ni el job `k8s-validate`), y hubo que crear
+`feature/deploy` desde `main` y planificar un back-merge `main → develop` para volver a alinear las ramas. Con
+`gitflow-guard` como check requerido en `main`, ninguno de los dos PRs se habría podido mergear.
 
 ### Versionado semántico
 
@@ -174,7 +223,12 @@ Reglas aplicadas a `main` y `develop` (protección de ramas en GitHub):
 
 - **PR obligatorio**: no se permite push directo a `main` ni a `develop`.
 - **Check requerido `build-and-test`**: el job del workflow [CI](.github/workflows/ci.yml) debe terminar en verde
-  para poder mergear.
+  para poder mergear. `publish-image` y `deploy` **no** son checks requeridos: no corren en los PRs (solo después
+  del merge, en el push a `develop` o `main`), así que exigirlos bloquearía todos los merges.
+- **Check requerido `gitflow-guard` solo en `main`**: bloquea los PRs hacia `main` que no vienen de `develop` ni de
+  `hotfix/*` (ver [Control automático](#control-automático-gitflow-guard)). Se configura como requerido únicamente
+  en la protección de `main`: en los PRs hacia `develop` el job no corre (cualquier rama de trabajo puede ir a
+  `develop`), y si fuera requerido allí GitHub esperaría un check que nunca aparece.
 - **Revisión con comentarios en línea** sobre el diff del PR (pestaña *Files changed*).
 - **Conversaciones resueltas** antes del merge: cada comentario de review se atiende con un commit o una respuesta y
   se marca como resuelto.
@@ -339,14 +393,16 @@ frenar todo el flujo por cada aviso nuevo.
 charmeetchic_api/
 ├── .github/
 │   ├── workflows/
-│   │   └── ci.yml                    Pipeline de CI (tests, cobertura, SonarCloud, imagen Docker + Trivy, manifiestos k8s)
+│   │   └── ci.yml                    Pipeline de CI/CD (tests, cobertura, SonarCloud, imagen + Trivy, manifiestos k8s,
+│   │                                 publicación en GHCR y despliegue automático en staging/production)
 │   ├── dependabot.yml                Actualizaciones automáticas de dependencias (Maven, Docker, Actions, npm)
 │   └── pull_request_template.md      Plantilla obligatoria de PR
 ├── docs/
-│   ├── kubernetes.md                 Arquitectura en Kubernetes, despliegue en kind y justificación de parámetros
-│   └── workflow.md                   Diagramas del flujo GitFlow y del pipeline
+│   ├── kubernetes.md                 Arquitectura en Kubernetes, despliegue en kind y automático, justificación de parámetros
+│   └── workflow.md                   Diagramas del flujo GitFlow, del pipeline CI/CD y de la trazabilidad
 ├── k8s/                              Manifiestos de Kubernetes (Kustomize)
-│   ├── kind-config.yaml              Clúster local kind: 1 control-plane + 2 workers (Kubernetes 1.35.8)
+│   ├── kind-config.yaml              Clúster kind: 1 control-plane + 2 workers (Kubernetes 1.35.8); local y job deploy
+│   ├── ci/smoke-test-pod.yaml        Pod con curl del smoke test del job deploy (/api/health y /api/products)
 │   ├── base/                         Recursos comunes: Namespace, ConfigMap, Deployment, Service, HPA y PDB de la API;
 │   │                                 StatefulSet, Service headless y NetworkPolicy de PostgreSQL; Secret de EJEMPLO
 │   └── overlays/

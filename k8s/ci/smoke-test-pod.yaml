@@ -1,0 +1,68 @@
+# -----------------------------------------------------------------------------
+# Smoke test del despliegue (job "deploy" del CI). NO forma parte de ningún overlay: el job lo aplica después
+# del rollout, reemplazando __EXPECTED_VERSION__ por la versión del pom.xml.
+#
+# Corre DENTRO del clúster y llama a la API a través del Service (el mismo camino que usaría otro servicio),
+# no con un port-forward, que se fija en un solo pod. Verifica:
+#   - GET /api/health responde 200, con "status":"UP" y la versión desplegada.
+#   - GET /api/products responde 200 (la API llega a PostgreSQL y lee el catálogo).
+# Termina en Succeeded si todo está bien y en Failed si algo falla; el job lee su log y su estado.
+#
+# Cumple el nivel "restricted" de Pod Security del namespace (sin root, sin capabilities, seccomp).
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-test
+  namespace: charmeetchic
+  labels:
+    app.kubernetes.io/name: smoke-test
+    app.kubernetes.io/part-of: charmeetchic
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    # 100:101 = curl_user:curl_group de la imagen curlimages/curl (el usuario de la imagen es un nombre, no un
+    # número, así que se indica el UID explícito para que Kubernetes pueda verificar runAsNonRoot).
+    runAsUser: 100
+    runAsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: curl
+      # curl 8.23.0 fijado por versión y digest.
+      image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: EXPECTED_VERSION
+          value: "__EXPECTED_VERSION__"
+        - name: API_URL
+          value: http://charmeetchic-api.charmeetchic.svc.cluster.local
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -eu
+          # Reintentos por si el Service todavía está actualizando sus endpoints tras el rollout.
+          health=$(curl -fsS --retry 10 --retry-delay 3 --retry-all-errors --max-time 5 "$API_URL/api/health")
+          echo "GET /api/health -> $health"
+          echo "$health" | grep -q '"status":"UP"' || { echo "FALLO: /api/health no responde status UP"; exit 1; }
+          echo "$health" | grep -q "\"version\":\"$EXPECTED_VERSION\"" \
+            || { echo "FALLO: la versión desplegada no es $EXPECTED_VERSION"; exit 1; }
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$API_URL/api/products?size=1")
+          echo "GET /api/products -> HTTP $code"
+          [ "$code" = "200" ] || { echo "FALLO: /api/products respondió HTTP $code"; exit 1; }
+          echo "SMOKE TEST OK: status UP, versión $EXPECTED_VERSION, /api/products 200"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 200m
+          memory: 64Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
