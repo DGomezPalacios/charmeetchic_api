@@ -87,6 +87,15 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Driver de PostgreSQL para el perfil "k8s" (application-k8s.yml): con varias réplicas en
+             Kubernetes todas deben compartir una base real; H2 en memoria daría una base por pod.
+             La versión la gestiona spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- JWT: validación de ID tokens de Firebase (RS256, claves públicas de Google vía JWKS).
              No se usa firebase-admin: verificar tokens no requiere credenciales y ese SDK arrastra
              decenas de dependencias de Google Cloud. Ver README ("Roles con custom claims"). -->
