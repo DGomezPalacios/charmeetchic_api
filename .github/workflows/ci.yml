@@ -136,7 +136,7 @@ jobs:
       # Sube los reportes de tests (surefire = unitarias, failsafe = integración), incluso si el job falló
       - name: Subir reportes de tests
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reportes-tests
           path: |
@@ -146,7 +146,7 @@ jobs:
       # Sube el reporte HTML de cobertura de JaCoCo (abrir index.html), incluso si falló el umbral
       - name: Subir reporte de cobertura
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reporte-cobertura
           path: target/site/jacoco/
@@ -154,7 +154,7 @@ jobs:
 
       # Sube el JAR generado como artefacto del workflow
       - name: Subir JAR generado
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: charmeetchic-api-jar
           path: target/charmeetchic-api-0.0.1-SNAPSHOT.jar
