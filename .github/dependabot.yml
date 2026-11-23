@@ -1,0 +1,84 @@
+# Dependabot: PRs automáticos de actualización de dependencias (ver "Política de seguridad" en CONTRIBUTING.md).
+#
+# - Los PRs apuntan a develop (GitFlow): pasan por el mismo CI y revisión que cualquier feature.
+# - Revisión semanal (lunes temprano, hora de Chile) para no interrumpir con PRs a diario.
+# - Mensajes en Conventional Commits: "build(deps): ..." para Maven y Docker, "ci(deps): ..." para Actions.
+#   Dependabot agrega los ":" después del prefijo.
+# - Las alertas de seguridad (Dependabot security updates) no esperan al calendario semanal: se abren apenas
+#   se publica el aviso, aunque usan esta misma configuración (rama, labels, prefijos).
+version: 2
+
+updates:
+  # Dependencias Java del pom.xml (Spring Boot parent, JJWT, plugins de Maven, etc.)
+  - package-ecosystem: "maven"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "java"
+    commit-message:
+      prefix: "build(deps)"
+      prefix-development: "build(deps)"
+    # Menores y parches en un solo PR semanal para no saturar; las versiones mayores (posibles cambios
+    # incompatibles, como un salto de Spring Boot 3 a 4) siguen llegando en PRs separados para revisarlas aparte.
+    groups:
+      maven-menores-y-parches:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Actions usadas en .github/workflows/. Las de terceros están fijadas por SHA: Dependabot actualiza
+  # el SHA y el comentario con la versión.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github_actions"
+    commit-message:
+      prefix: "ci(deps)"
+
+  # Imágenes base del Dockerfile (maven y eclipse-temurin), fijadas por versión exacta y digest.
+  - package-ecosystem: "docker"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "build(deps)"
+
+  # Script de administración de Firebase (scripts/firebase/addAdmin.js). No forma parte de la API ni de la
+  # imagen Docker, pero sus dependencias (firebase-admin y su árbol) también reciben avisos de seguridad.
+  - package-ecosystem: "npm"
+    directory: "/scripts/firebase"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:00"
+      timezone: "America/Santiago"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "build(deps)"

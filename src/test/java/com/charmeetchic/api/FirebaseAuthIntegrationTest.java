@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -36,7 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Cadena de seguridad completa en modo FIREBASE (el de producción): tokens RS256 con issuer
  * {@code https://securetoken.google.com/<PROJECT_ID>} y audience {@code <PROJECT_ID>}.
  *
- * <p>La descarga de las claves públicas de Google se simula ({@link MockBean} de {@link JwksKeyProvider}):
+ * <p>La descarga de las claves públicas de Google se simula ({@link MockitoBean} de {@link JwksKeyProvider}):
  * el par RSA generado aquí hace de "Google". Así se comprueba filtro + servicio + reglas de acceso sin red
  * ni un proyecto real de Firebase. Usa su propia base H2 para no interferir con otros tests.
  */
@@ -55,7 +55,7 @@ class FirebaseAuthIntegrationTest {
 
     @Autowired
     private MockMvc mvc;
-    @MockBean
+    @MockitoBean
     private JwksKeyProvider jwksKeyProvider;
 
     @BeforeEach

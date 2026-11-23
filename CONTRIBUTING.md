@@ -62,6 +62,7 @@ tipo(scope): descripción
 | `docs` | Solo documentación (README, guías, comentarios de documentación). |
 | `test` | Agregar o corregir tests, sin cambiar código de producción. |
 | `ci` | Cambios en el pipeline de integración continua (`.github/workflows`). |
+| `build` | Cambios en el sistema de build (`pom.xml`: plugins de Maven, ejecución de pruebas, cobertura). |
 | `chore` | Tareas de mantenimiento que no afectan el código de la aplicación (dependencias, configuración del repo). |
 | `refactor` | Cambio de código que no agrega funcionalidad ni corrige errores. |
 
@@ -74,6 +75,13 @@ tipo(scope): descripción
 | `auth` | Autenticación y autorización con Firebase (JWT, roles). |
 | `config` | Configuración de Spring (`application.yml`, CORS, seguridad). |
 | `readme` | Documentación en `README.md`. |
+| `docker` | Contenerización: `Dockerfile`, `.dockerignore` y el job `docker-build` del CI. |
+| `tests` | Configuración de las pruebas y la cobertura (surefire, failsafe, JaCoCo). Se usa con `build` y `ci`. |
+| `orders` | Órdenes de compra: creación, stock, estados y cancelación. |
+| `users` | Sincronización del usuario local con el token de Firebase. |
+| `errors` | Manejo uniforme de errores (`GlobalExceptionHandler`, `ApiError`). |
+| `security` | Seguridad del pipeline: permisos del workflow, SonarCloud, Trivy. Se usa con `ci` y `docs`. |
+| `deps` | Actualización de dependencias (`build(deps)` para Maven y Docker, `ci(deps)` para actions). Lo usa Dependabot. |
 
 ### Ejemplos reales (`git log`)
 
@@ -185,16 +193,156 @@ adicional en la misma rama (`fix(products): rechaza precios negativos en la bús
 
 ---
 
+## Política de calidad
+
+### Tipos de pruebas
+
+| Tipo | Archivos | Plugin / fase | Qué prueban |
+|---|---|---|---|
+| Unitarias | Todo `*Test.java` que **no** termine en `IntegrationTest` (`service/*Test`, `filter/*Test`, `exception/*Test`, `HealthControllerTest`) | `maven-surefire-plugin`, fase `test` | Reglas de negocio de cada clase aislada con mocks (Mockito): stock, totales, estados de orden, validación de tokens, formato de errores. Rápidas, sin red. |
+| Integración | `*IntegrationTest.java` (`ApiIntegrationTest`, `FirebaseAuthIntegrationTest`) | `maven-failsafe-plugin`, fases `integration-test` y `verify` | La API completa por HTTP: contexto de Spring, seguridad, roles, H2, serialización JSON y códigos de estado. |
+
+```bash
+mvn -B test     # solo unitarias (feedback rápido mientras se programa)
+mvn -B verify   # unitarias + integración + JAR + reporte y umbrales de cobertura
+```
+
+`HealthControllerTest` levanta el contexto de Spring, pero por convención de nombre corre con las unitarias; es una
+sola prueba rápida.
+
+### Qué se ejecuta en cada step del CI (job `build-and-test`)
+
+| Step | Comando | Si falla |
+|---|---|---|
+| Pruebas unitarias | `mvn -B test` | Se detiene el job: hay una regresión en la lógica. |
+| Pruebas de integración y verificación de cobertura | `mvn -B verify -DskipUTs=true` | Falla si una prueba de integración falla **o** si la cobertura baja de los umbrales. Reutiliza lo compilado y no repite las unitarias. |
+| Smoke test del JAR | `java -jar` + `curl /api/health` | El artefacto no arranca. |
+| Resumen de tests y cobertura | bash + awk sobre los reportes | Siempre se ejecuta: publica en el *Job Summary* los tests por tipo y la cobertura de líneas y ramas. |
+| Subir artefactos | `actions/upload-artifact` | Siempre se ejecuta: `reportes-tests` (surefire + failsafe), `reporte-cobertura` (HTML de JaCoCo) y el JAR. |
+
+Luego el job `docker-build` construye la imagen y verifica que el contenedor quede `healthy`.
+
+### Cobertura y umbrales
+
+La cobertura se mide con **JaCoCo** combinando unitarias e integración (`target/site/jacoco/`: HTML, XML para
+SonarCloud y CSV para el resumen del CI). Se excluyen del cálculo las clases sin lógica propia: la clase main
+`CharmeetchicApiApplication`, los DTOs (records) y las entidades JPA (Lombok + mapeo con anotaciones).
+
+| Regla | Líneas | Ramas | Medido al fijarla |
+|---|---:|---:|---|
+| Todo el proyecto (`BUNDLE`) | 93 % | 82 % | 97,0 % líneas / 86,0 % ramas |
+| Paquete `service` | 95 % | 85 % | 97,3 % líneas / 88,1 % ramas |
+
+Criterio:
+
+- **Unos puntos bajo lo medido** (3–4): es alcanzable y deja margen para código nuevo razonable, pero un retroceso real
+  (por ejemplo, una clase nueva sin pruebas o borrar tests) hace fallar `mvn verify`.
+- **`service` más exigente** porque ahí viven las reglas de negocio que afectan dinero, stock y seguridad (totales e
+  IVA, descuento de stock, transiciones de estado, validación de tokens y claves de Firebase).
+- **Ramas además de líneas**: una línea con un `if` puede estar "cubierta" sin haber probado el camino de error; la
+  cobertura de ramas obliga a probar ambos lados.
+- Los umbrales están en `pom.xml` (`cobertura.*.min`). Se suben cuando la cobertura mejora de forma estable; **no se
+  bajan** para hacer pasar un PR.
+
+### Qué se considera un caso crítico
+
+Un caso es crítico si un error en él puede vender sin stock, cobrar mal, exponer datos o dar acceso indebido. Todo
+cambio que toque estos caminos debe traer su prueba:
+
+- **Errores de validación**: datos de entrada inválidos, rangos de precio o fechas incorrectos, carrito vacío,
+  transiciones de estado no permitidas.
+- **Stock**: stock insuficiente (la orden se rechaza y el stock no cambia) y devolución de stock al cancelar.
+- **Tokens**: token inválido, expirado, falsificado, de otro proyecto o con `kid` desconocido; claves de Google no
+  disponibles (500, no 401); que no se pueda forzar la descarga de claves en cada petición.
+- **Autorización**: acceso sin rol (403), órdenes de otro usuario, revocación del rol ADMIN en Firebase.
+- **Recursos inexistentes**: producto, categoría u orden que no existe (404), sin modificar nada.
+- **Errores internos**: un 500 o un error de base de datos no debe exponer detalles técnicos al cliente.
+
+No se agregan pruebas triviales (getters, records, constructores) solo para subir el porcentaje.
+
+### Un check en rojo bloquea el merge
+
+`build-and-test` y `docker-build` son checks requeridos en la protección de `main` y `develop`. Si una prueba falla,
+la cobertura baja del umbral, el JAR no arranca o la imagen no queda `healthy`, el check queda en rojo y **GitHub no
+permite mergear el PR** hasta corregirlo con un nuevo commit en la misma rama.
+
+---
+
+## Política de seguridad
+
+La seguridad se revisa en cuatro capas, cada una con una herramienta distinta. Ninguna reemplaza a las otras: una
+dependencia vulnerable puede no aparecer en el código, y un secreto expuesto no es una vulnerabilidad de librería.
+
+### Qué analiza cada herramienta
+
+| Herramienta | Qué analiza | Cuándo corre |
+|---|---|---|
+| **Dependabot** (`.github/dependabot.yml`) | Dependencias: `pom.xml` (Maven), imágenes base del `Dockerfile`, actions de los workflows y `scripts/firebase/package.json` (npm). Abre PRs hacia `develop` con la versión nueva. | Revisión semanal (lunes) y, para avisos de seguridad, apenas se publica el aviso. |
+| **SonarCloud** (job `sonarcloud`) | Código fuente: bugs, vulnerabilidades, *security hotspots*, code smells, duplicación y cobertura (lee el XML de JaCoCo). Aplica el *quality gate* al código nuevo. | En cada PR hacia `develop`/`main` y en cada push a `develop`. |
+| **Trivy** (job `docker-build`) | La imagen Docker ya construida: paquetes de Alpine, el JRE y los JAR de la aplicación (Spring, Tomcat, Jackson...). | En cada ejecución del workflow, después de construir la imagen. |
+| **Secret scanning** (GitHub) | Credenciales en el repositorio (tokens, claves privadas, claves de Firebase/Google Cloud). Con *push protection* rechaza el push que contiene un secreto conocido. | En cada push, sobre todo el historial. |
+
+Los secretos del pipeline (`SONAR_TOKEN`) se guardan como *secrets* de Actions y de Dependabot, nunca en archivos.
+Los PRs de Dependabot reciben el secret de Dependabot, así que también pasan por SonarCloud.
+
+### Qué bloquea el merge y qué solo alerta
+
+| Resultado | Efecto |
+|---|---|
+| Trivy encuentra una vulnerabilidad **CRITICAL con corrección disponible** | **Bloquea**: falla `docker-build`, que es check requerido. |
+| Trivy encuentra vulnerabilidades **HIGH** (o CRITICAL sin corrección publicada) | Solo alerta: aparecen en el log del job y en *Security → Code scanning*. Las CRITICAL sin corrección se omiten (`ignore-unfixed`) porque no hay versión a la cual actualizar. |
+| El *quality gate* de SonarCloud falla | Falla el job `sonarcloud`. **Bloquea solo si `sonarcloud` está configurado como check requerido** en la protección de `main` y `develop` (recomendado); mientras no lo esté, se ve en rojo en el PR pero no impide el merge. |
+| Dependabot detecta una dependencia vulnerable | Alerta en *Security → Dependabot alerts* y abre un PR con la corrección. No bloquea por sí mismo; el PR pasa por el mismo CI. |
+| Secret scanning detecta un secreto | Con *push protection*, el push se rechaza antes de llegar al repositorio. Si el secreto ya estaba, queda una alerta en *Security → Secret scanning*. |
+
+**Criterio de Trivy**: una CRITICAL con corrección es grave y tiene solución concreta (subir de versión), así que no
+hay motivo para dejarla llegar a `develop`. Las HIGH se atienden en PRs propios (normalmente los de Dependabot), sin
+frenar todo el flujo por cada aviso nuevo.
+
+### Dónde se ven las alertas
+
+- **Pestaña Security del repositorio**: *Dependabot alerts*, *Code scanning* (resultados de Trivy, categoría
+  `trivy-imagen`) y *Secret scanning*.
+- **PRs de Dependabot**: llevan los labels `dependencies` y el del ecosistema (`java`, `github_actions`, `docker`, `javascript`);
+  las actualizaciones menores y de parche de Maven llegan juntas en un solo PR semanal.
+- **Dashboard de SonarCloud** (organización `dgomezpalacios`, proyecto `DGomezPalacios_charmeetchic_api`): issues,
+  hotspots, cobertura y estado del quality gate. En cada PR, SonarCloud también deja el resultado como check.
+- **Log del job `docker-build`**: tabla de Trivy con CRITICAL y HIGH.
+
+### Cómo se gestiona una alerta
+
+1. **Evaluar**: revisar el aviso (CVE, severidad, versión corregida) y si el código afectado se usa realmente en la API.
+2. **Corregir** en una rama propia hacia `develop` (`fix/*` o `feature/*`; `hotfix/*` sobre `main` si ya está en
+   producción y es grave), o aprobar el PR de Dependabot si el CI queda en verde. Commit con el scope que corresponda,
+   por ejemplo `build(deps): actualiza Spring Boot a 3.5.x`.
+3. **Verificar** que el check vuelva a verde y que la alerta se cierre sola en la pestaña Security al llegar a la rama
+   analizada.
+4. **Si no se puede corregir todavía** (no hay versión corregida o la actualización requiere una migración mayor):
+   documentar el riesgo aceptado **con una justificación escrita** y abrir un issue para retomarla. En Trivy se agrega
+   a `.trivyignore` con un comentario (qué es, por qué no aplica, por qué no se corrige ahora y cuándo se revisa) y
+   una fecha de vencimiento `exp:AAAA-MM-DD`: al vencer, la vulnerabilidad vuelve a bloquear. Ejemplo actual:
+   CVE-2026-47884 (`XsltView` de spring-webmvc, solo corregida en Spring Framework 7 / Spring Boot 4; la API no usa
+   vistas XSLT). En GitHub o SonarCloud, la alerta se descarta con el mismo tipo de justificación. Nunca se ocultan
+   hallazgos sin justificar.
+5. **Secreto expuesto**: revocar y rotar la credencial de inmediato (borrarla del historial no basta: hay que asumir
+   que ya fue copiada), actualizar el secret en GitHub y cerrar la alerta.
+
+---
+
 ## Estructura de carpetas
 
 ```
 charmeetchic_api/
 ├── .github/
 │   ├── workflows/
-│   │   └── ci.yml                    Pipeline de CI (build, tests, smoke test, artefactos)
+│   │   └── ci.yml                    Pipeline de CI (tests, cobertura, SonarCloud, imagen Docker + Trivy)
+│   ├── dependabot.yml                Actualizaciones automáticas de dependencias (Maven, Docker, Actions, npm)
 │   └── pull_request_template.md      Plantilla obligatoria de PR
 ├── docs/
 │   └── workflow.md                   Diagramas del flujo GitFlow y del pipeline
+├── scripts/
+│   └── firebase/                     Script Node.js de alta de administradores (addAdmin.js: claim ADMIN en
+│                                     Firebase). No lo usa la API ni entra en la imagen; Dependabot (npm) lo mantiene
 ├── src/
 │   ├── main/
 │   │   ├── java/com/charmeetchic/api/
@@ -213,10 +361,11 @@ charmeetchic_api/
 │   │       ├── application.yml   Configuración de la aplicación (puerto, context-path /api, H2, Firebase)
 │   │       └── data.sql          Datos iniciales del catálogo
 │   └── test/
-│       └── java/com/charmeetchic/api/   Tests unitarios (Mockito) y de integración (MockMvc + H2)
+│       └── java/com/charmeetchic/api/   Unitarias *Test (Mockito, surefire) e integración *IntegrationTest (MockMvc + H2, failsafe)
+├── .trivyignore                      Riesgos aceptados de Trivy, con justificación y vencimiento
 ├── CONTRIBUTING.md
 ├── README.md
-└── pom.xml                           Dependencias y build con Maven
+└── pom.xml                           Spring Boot 3.5 (parent), dependencias, pruebas, cobertura y SonarCloud
 ```
 
 > El modelo de dominio vive en el paquete `entity` (no `model`), y el paquete de enumeraciones se llama `enums`

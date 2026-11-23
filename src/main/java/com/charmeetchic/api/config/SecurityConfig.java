@@ -17,10 +17,10 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.servlet.HandlerExceptionResolver;
-
-import static org.springframework.security.web.util.matcher.AntPathRequestMatcher.antMatcher;
 
 /**
  * Reglas de seguridad HTTP.
@@ -43,8 +43,10 @@ import static org.springframework.security.web.util.matcher.AntPathRequestMatche
  * </pre>
  * Además cada método de controlador restringido lleva {@code @PreAuthorize} (defensa en profundidad).
  *
- * <p>Se usa {@code antMatcher} en lugar de {@code requestMatchers(String)} porque la consola H2 registra
- * un segundo servlet y en ese caso Spring Security no puede decidir si una ruta es de Spring MVC.
+ * <p>Se usan matchers explícitos ({@link #path}) en lugar de {@code requestMatchers(String)} porque la consola H2
+ * registra un segundo servlet y en ese caso Spring Security no puede decidir si una ruta es de Spring MVC.
+ * Son {@link PathPatternRequestMatcher}, que reemplaza a {@code AntPathRequestMatcher.antMatcher} (obsoleto y
+ * marcado para eliminación desde Spring Security 6.5); igual que antes, comparan la ruta sin el context-path.
  */
 @Configuration
 @EnableWebSecurity
@@ -53,6 +55,9 @@ public class SecurityConfig {
 
     private static final String ADMIN = "ADMIN";
     private static final String USER = "USER";
+
+    /** Patrones de ruta con el parser de Spring (PathPattern), válidos para cualquier servlet de la aplicación. */
+    private static final PathPatternRequestMatcher.Builder PATHS = PathPatternRequestMatcher.withDefaults();
 
     private final JwtService jwtService;
     private final UserService userService;
@@ -96,33 +101,33 @@ public class SecurityConfig {
                                 exceptionResolver.resolveException(request, response, null, accessDenied)))
                 .authorizeHttpRequests(auth -> {
                     // Preflight CORS y página de error de Spring Boot.
-                    auth.requestMatchers(antMatcher(HttpMethod.OPTIONS, "/**")).permitAll();
-                    auth.requestMatchers(antMatcher("/error")).permitAll();
+                    auth.requestMatchers(path(HttpMethod.OPTIONS, "/**")).permitAll();
+                    auth.requestMatchers(path("/error")).permitAll();
 
                     if (h2ConsoleEnabled) {
-                        auth.requestMatchers(antMatcher("/h2-console/**")).permitAll(); // solo desarrollo
+                        auth.requestMatchers(path("/h2-console/**")).permitAll(); // solo desarrollo
                     }
 
-                    auth.requestMatchers(antMatcher(HttpMethod.GET, "/health")).permitAll();
+                    auth.requestMatchers(path(HttpMethod.GET, "/health")).permitAll();
 
                     // Catálogo: lectura pública, escritura ADMIN. low-stock va ANTES de la regla pública.
-                    auth.requestMatchers(antMatcher(HttpMethod.GET, "/products/low-stock")).hasRole(ADMIN);
-                    auth.requestMatchers(antMatcher(HttpMethod.GET, "/products/**")).permitAll();
-                    auth.requestMatchers(antMatcher(HttpMethod.POST, "/products/**")).hasRole(ADMIN);
-                    auth.requestMatchers(antMatcher(HttpMethod.PUT, "/products/**")).hasRole(ADMIN);
-                    auth.requestMatchers(antMatcher(HttpMethod.DELETE, "/products/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.GET, "/products/low-stock")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.GET, "/products/**")).permitAll();
+                    auth.requestMatchers(path(HttpMethod.POST, "/products/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.PUT, "/products/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.DELETE, "/products/**")).hasRole(ADMIN);
 
-                    auth.requestMatchers(antMatcher(HttpMethod.GET, "/categories/**")).permitAll();
-                    auth.requestMatchers(antMatcher(HttpMethod.POST, "/categories/**")).hasRole(ADMIN);
-                    auth.requestMatchers(antMatcher(HttpMethod.PUT, "/categories/**")).hasRole(ADMIN);
-                    auth.requestMatchers(antMatcher(HttpMethod.DELETE, "/categories/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.GET, "/categories/**")).permitAll();
+                    auth.requestMatchers(path(HttpMethod.POST, "/categories/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.PUT, "/categories/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path(HttpMethod.DELETE, "/categories/**")).hasRole(ADMIN);
 
-                    auth.requestMatchers(antMatcher("/reports/**")).hasRole(ADMIN);
+                    auth.requestMatchers(path("/reports/**")).hasRole(ADMIN);
 
-                    auth.requestMatchers(antMatcher(HttpMethod.PUT, "/orders/*/status")).hasRole(ADMIN);
-                    auth.requestMatchers(antMatcher("/orders/**")).hasRole(USER);
+                    auth.requestMatchers(path(HttpMethod.PUT, "/orders/*/status")).hasRole(ADMIN);
+                    auth.requestMatchers(path("/orders/**")).hasRole(USER);
 
-                    auth.requestMatchers(antMatcher("/profile")).authenticated();
+                    auth.requestMatchers(path("/profile")).authenticated();
 
                     // Todo lo demás requiere autenticación (lista blanca, no lista negra).
                     auth.anyRequest().authenticated();
@@ -131,5 +136,13 @@ public class SecurityConfig {
                         UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    private static RequestMatcher path(String pattern) {
+        return PATHS.matcher(pattern);
+    }
+
+    private static RequestMatcher path(HttpMethod method, String pattern) {
+        return PATHS.matcher(method, pattern);
     }
 }

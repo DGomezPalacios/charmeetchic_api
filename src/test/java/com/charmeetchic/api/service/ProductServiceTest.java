@@ -274,6 +274,23 @@ class ProductServiceTest {
                 .isInstanceOf(ConflictException.class);
     }
 
+    /** Un producto nunca debe quedar apuntando a una categoría que no existe (rompería el catálogo y los reportes). */
+    @Test
+    void updateProduct_movedToUnknownCategory_throwsNotFoundAndKeepsCategory() {
+        Product existing = product(5L, "OLD-SKU", 10);
+        when(productRepository.findById(5L)).thenReturn(Optional.of(existing));
+        when(productRepository.existsBySkuAndIdNot("OLD-SKU", 5L)).thenReturn(false);
+        when(categoryRepository.findById(99L)).thenReturn(Optional.empty());
+        ProductDTO toUnknownCategory = new ProductDTO(null, "Collar", "desc", new BigDecimal("150.00"),
+                new BigDecimal("60.00"), "OLD-SKU", 10, 99L, null, List.of(), null, null, null, null);
+
+        assertThatThrownBy(() -> service.updateProduct(5L, toUnknownCategory))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        assertThat(existing.getCategory()).isSameAs(category);
+        verify(productRepository, never()).saveAndFlush(any());
+    }
+
     @Test
     void deleteProduct_isSoftDelete() {
         Product existing = product(5L, "COL-001", 10);

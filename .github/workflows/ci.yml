@@ -10,12 +10,26 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Mínimo privilegio: por defecto el GITHUB_TOKEN de todos los jobs solo puede leer el código.
+# Un job que necesite algo más lo pide en su propio bloque `permissions` (que reemplaza a este).
+permissions:
+  contents: read
+
+# Una sola ejecución en curso por PR (o por rama en los push): si llega un commit nuevo, la ejecución
+# anterior se cancela, porque ya valida un estado obsoleto y solo gastaría minutos de runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  # Job único que compila el proyecto, corre los tests y valida que el
+  # Primer job: compila el proyecto, corre los tests y valida que el
   # artefacto generado levante correctamente (smoke test)
   build-and-test:
     # Máquina virtual donde se ejecuta el job
     runs-on: ubuntu-latest
+    # Una ejecución normal tarda unos pocos minutos; el límite corta un job colgado
+    # (por ejemplo, un test bloqueado) antes de los 360 minutos por defecto de GitHub.
+    timeout-minutes: 20
 
     steps:
       # Descarga el código del repositorio en el runner
@@ -24,15 +38,23 @@ jobs:
 
       # Instala el JDK 17 (Temurin) y habilita el cache de dependencias Maven
       - name: Configurar JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: maven
 
-      # Compila el proyecto, corre los tests unitarios/integración y empaqueta el JAR
-      - name: Compilar y ejecutar tests (mvn verify)
-        run: mvn -B verify
+      # Compila y ejecuta solo las pruebas unitarias (surefire). Falla rápido si hay una regresión de lógica.
+      # El agente de JaCoCo registra la cobertura en target/jacoco.exec.
+      - name: Pruebas unitarias (mvn test)
+        run: mvn -B test
+
+      # Pruebas de integración (failsafe), empaquetado del JAR, reporte de cobertura y política de umbrales.
+      # -DskipUTs=true evita repetir las unitarias; lo compilado se reutiliza ("Nothing to compile") y
+      # JaCoCo agrega (append) la cobertura de integración al mismo jacoco.exec, así el reporte es combinado.
+      # Si la cobertura baja de los umbrales del pom.xml, este step falla.
+      - name: Pruebas de integración y verificación de cobertura (mvn verify)
+        run: mvn -B verify -DskipUTs=true
 
       # Smoke test: levanta el JAR generado en segundo plano y verifica que
       # el endpoint de salud responda, reintentando por si la app tarda en iniciar
@@ -59,13 +81,76 @@ jobs:
             exit 1
           fi
 
-      # Sube el reporte de tests (Surefire) como artefacto, incluso si el job falló
+      # Resumen en la página del job (Job Summary): tests por tipo y cobertura de líneas/ramas.
+      # Solo bash + awk (vienen en el runner): sin actions de terceros ni dependencias externas.
+      # Corre siempre, para que el resumen también explique un job en rojo.
+      - name: Publicar resumen de tests y cobertura
+        if: always()
+        run: |
+          # Suma los atributos tests/failures/errors/skipped de los TEST-*.xml de un directorio
+          contar() {
+            if ! ls "$1"/TEST-*.xml >/dev/null 2>&1; then
+              echo "| $2 | - | - | - | - |"
+              return
+            fi
+            awk -v tipo="$2" '
+              /<testsuite / {
+                for (i = 1; i <= NF; i++) {
+                  if ($i ~ /^tests=/)    { gsub(/[^0-9]/, "", $i); t += $i }
+                  if ($i ~ /^failures=/) { gsub(/[^0-9]/, "", $i); f += $i }
+                  if ($i ~ /^errors=/)   { gsub(/[^0-9]/, "", $i); e += $i }
+                  if ($i ~ /^skipped=/)  { gsub(/[^0-9]/, "", $i); s += $i }
+                }
+              }
+              END { printf "| %s | %d | %d | %d | %d |\n", tipo, t, f, e, s }
+            ' "$1"/TEST-*.xml
+          }
+
+          {
+            echo "## Resultados de pruebas"
+            echo
+            echo "| Tipo | Tests | Fallos | Errores | Omitidos |"
+            echo "|---|---:|---:|---:|---:|"
+            contar target/surefire-reports "Unitarias (surefire)"
+            contar target/failsafe-reports "Integración (failsafe)"
+            echo
+            echo "## Cobertura (JaCoCo, unitarias + integración)"
+            echo
+            CSV=target/site/jacoco/jacoco.csv
+            if [ -f "$CSV" ]; then
+              # Columnas del CSV: 6-7 ramas perdidas/cubiertas, 8-9 líneas perdidas/cubiertas
+              awk -F, 'NR > 1 { lm += $8; lc += $9; bm += $6; bc += $7 }
+                END {
+                  print "| Métrica | Cubiertas | Total | Cobertura |"
+                  print "|---|---:|---:|---:|"
+                  printf "| Líneas | %d | %d | %.1f%% |\n", lc, lc + lm, 100 * lc / (lc + lm)
+                  printf "| Ramas | %d | %d | %.1f%% |\n", bc, bc + bm, 100 * bc / (bc + bm)
+                }' "$CSV"
+              echo
+              echo "Umbrales: ver la sección *Política de calidad* de CONTRIBUTING.md. Reporte HTML en el artefacto \`reporte-cobertura\`."
+            else
+              echo "No se generó el reporte de cobertura (el job falló antes de la fase verify)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Sube los reportes de tests (surefire = unitarias, failsafe = integración), incluso si el job falló
       - name: Subir reportes de tests
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports
-          path: target/surefire-reports/
+          name: reportes-tests
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+
+      # Sube el reporte HTML de cobertura de JaCoCo (abrir index.html), incluso si falló el umbral
+      - name: Subir reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-cobertura
+          path: target/site/jacoco/
+          if-no-files-found: ignore
 
       # Sube el JAR generado como artefacto del workflow
       - name: Subir JAR generado
@@ -73,3 +158,188 @@ jobs:
         with:
           name: charmeetchic-api-jar
           path: target/charmeetchic-api-0.0.1-SNAPSHOT.jar
+
+  # Análisis estático de código y cobertura en SonarCloud (bugs, vulnerabilidades, code smells,
+  # duplicación). Corre en paralelo con docker-build, después de que build-and-test esté en verde.
+  # El job falla si el quality gate de SonarCloud falla (-Dsonar.qualitygate.wait=true).
+  sonarcloud:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 20
+    # Los PRs desde forks no reciben secrets: el análisis no podría autenticarse. Los PRs de Dependabot
+    # sí lo tienen, porque SONAR_TOKEN también está cargado como secret de Dependabot.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      # Historial completo: SonarCloud usa git blame para atribuir cada problema a su commit y
+      # distinguir el "código nuevo" del existente.
+      - name: Checkout del código (historial completo)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Cache de los plugins de análisis que descarga el scanner (~/.sonar/cache)
+      - name: Cache de SonarCloud
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      # verify genera el XML de JaCoCo (unitarias + integración) que lee SonarCloud; el plugin toma la
+      # versión fijada en el pluginManagement del pom.xml y la organización/proyecto de sus propiedades.
+      # El token llega solo como variable de entorno: nunca aparece en el comando ni en el log.
+      - name: Análisis de SonarCloud (mvn verify + sonar)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: >
+          mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.qualitygate.wait=true
+
+  # Job docker-build: construye la imagen Docker, la escanea con Trivy y verifica que el contenedor arranque sano.
+  # Solo corre si build-and-test terminó en verde. La imagen NO se publica en ningún registro.
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 20
+    # Único job que escribe algo con el GITHUB_TOKEN: subir el SARIF de Trivy a Code Scanning
+    # (pestaña Security). Al declarar permissions aquí se reemplaza el bloque global, por eso se
+    # repite contents: read (lo necesita el checkout).
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      # Descarga el código (el Dockerfile compila desde pom.xml y src/)
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # Actions de terceros fijadas por el SHA completo del commit, no por tag: un tag se puede mover a otro
+      # commit (si el repositorio de la action se ve comprometido), un SHA no. El comentario indica la versión
+      # y Dependabot (ecosistema github-actions) actualiza ambos.
+
+      # Buildx habilita BuildKit y el cache de capas en GitHub Actions (type=gha)
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Construye la imagen y la carga en el Docker del runner (load: true) sin publicarla (push: false).
+      # Las labels OCI permiten rastrear desde qué commit y repositorio se generó la imagen.
+      - name: Construir imagen Docker
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          push: false
+          load: true
+          tags: |
+            charmeetchic-api:${{ github.sha }}
+            charmeetchic-api:ci
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=0.0.1-SNAPSHOT
+          # Reutiliza las capas entre ejecuciones (dependencias Maven, JRE base, etc.)
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------------- Escaneo de vulnerabilidades de la imagen con Trivy ----------------
+      # Trivy revisa los paquetes del sistema (Alpine), el JRE y los JAR de BOOT-INF/lib (Spring, Tomcat,
+      # Jackson...). Criterio:
+      #   - Se reportan CRITICAL y HIGH, con ignore-unfixed: true. Una vulnerabilidad sin versión corregida no
+      #     es accionable (no hay a qué actualizar); se ve en el aviso público, pero no ensucia el reporte.
+      #   - Solo bloquea (exit-code 1) una CRITICAL con corrección disponible: es grave y tiene solución
+      #     concreta (subir la versión), así que no hay motivo para dejarla pasar a develop o main.
+      #   - Las HIGH se reportan sin bloquear: quedan en el log, en el SARIF y en la pestaña Security para
+      #     atenderlas vía Dependabot o en una rama propia, sin frenar todo el flujo de trabajo por cada aviso.
+      # La versión de Trivy se fija explícitamente para que el resultado no cambie por una versión nueva.
+      # Riesgos aceptados: .trivyignore (los tres pasos lo usan). Cada excepción lleva su justificación y una
+      # fecha de vencimiento (exp:); al vencer, la vulnerabilidad vuelve a aparecer y a bloquear.
+
+      # 1) Reporte SARIF (CRITICAL + HIGH) para GitHub Code Scanning. Nunca falla: solo genera el archivo.
+      - name: Trivy - reporte SARIF (CRITICAL y HIGH)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.2'
+          image-ref: charmeetchic-api:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '0'
+
+      # 2) Tabla legible en el log del job (CRITICAL + HIGH). Tampoco falla.
+      - name: Trivy - reporte en el log (CRITICAL y HIGH)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.2'
+          image-ref: charmeetchic-api:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: '0'
+          skip-setup-trivy: true
+
+      # (El paso 3, el gate que bloquea, va al final del job: así la verificación del contenedor corre
+      # igual y el log muestra ambos resultados aunque Trivy encuentre una CRITICAL.)
+
+      # Levanta el contenedor, espera a que el HEALTHCHECK del Dockerfile lo marque "healthy"
+      # (máximo 120 s) y valida /api/health con curl. Si algo falla, muestra los logs y falla el job.
+      - name: Verificar contenedor (healthcheck + /api/health)
+        run: |
+          docker run -d --name cc-api -p 8080:8080 charmeetchic-api:ci
+
+          status=""
+          for i in $(seq 1 24); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' cc-api)
+            echo "Intento $i: estado del contenedor = $status"
+            if [ "$status" = "healthy" ] || [ "$status" = "unhealthy" ]; then
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$status" != "healthy" ] || ! curl --fail --silent --show-error http://localhost:8080/api/health; then
+            echo "El contenedor no quedó healthy o /api/health no respondió. Logs del contenedor:"
+            docker logs cc-api
+            docker rm -f cc-api
+            exit 1
+          fi
+
+          echo
+          echo "Contenedor healthy y /api/health respondió correctamente"
+          docker inspect --format '{{json .Config.Labels}}' cc-api
+          docker rm -f cc-api
+
+      # 3) Gate de Trivy: falla el job si hay alguna CRITICAL con corrección disponible (criterio arriba).
+      - name: Trivy - bloquear CRITICAL corregibles
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: 'v0.76.2'
+          image-ref: charmeetchic-api:${{ github.sha }}
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: '1'
+          skip-setup-trivy: true
+
+      # Publica el SARIF en la pestaña Security (Code scanning) aunque el gate o la verificación hayan
+      # fallado, para ver ahí el detalle de cada vulnerabilidad. hashFiles evita un error adicional si el
+      # escaneo ni siquiera llegó a correr (por ejemplo, si falló el build de la imagen).
+      - name: Subir resultados de Trivy a GitHub Code Scanning
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-imagen
