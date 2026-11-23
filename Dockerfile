@@ -10,7 +10,10 @@
 # -----------------------------------------------------------------------------
 
 # ---------- Etapa 1: compilación (JDK + Maven, se descarta al final) ----------
-FROM maven:3.9-eclipse-temurin-17 AS build
+# Imagen fijada por versión exacta (Maven 3.9.16 sobre Temurin JDK 17) y por digest: el tag puede
+# volver a publicarse con otro contenido, el digest no. Así dos builds del mismo commit usan exactamente la
+# misma imagen. Dependabot (ecosistema docker) propone las actualizaciones de tag y digest.
+FROM maven:3.9.16-eclipse-temurin-17@sha256:1a352420f7aba21f5ad08df31bab55f74c013fb491f1ae8ab1dd7ff9ed698584 AS build
 WORKDIR /build
 
 # Cache de dependencias: primero solo el pom.xml. Mientras el pom no cambie, Docker reutiliza
@@ -32,7 +35,8 @@ RUN java -Djarmode=layertools -jar app.jar extract --destination extracted
 # Variante alpine: JRE 17 sobre Alpine (musl). La app es Java puro (Spring Web, JPA, H2 en
 # memoria, JJWT), sin librerías nativas, así que corre sin problemas y la imagen pesa mucho menos
 # que la variante Ubuntu. Además trae BusyBox, que incluye wget para el HEALTHCHECK.
-FROM eclipse-temurin:17-jre-alpine
+# Fijada a JRE 17.0.21.1 (build 2) por tag exacto y digest, por el mismo motivo que la etapa de build.
+FROM eclipse-temurin:17.0.21.1_2-jre-alpine@sha256:2b4113ae80e31f103b284dd3bc3e008add670cf8555417b5b289fa1128f2f0a3
 WORKDIR /app
 
 # Usuario de sistema sin privilegios: si la app se ve comprometida, no tiene root en el contenedor.
