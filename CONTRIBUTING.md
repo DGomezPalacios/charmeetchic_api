@@ -80,6 +80,8 @@ tipo(scope): descripción
 | `orders` | Órdenes de compra: creación, stock, estados y cancelación. |
 | `users` | Sincronización del usuario local con el token de Firebase. |
 | `errors` | Manejo uniforme de errores (`GlobalExceptionHandler`, `ApiError`). |
+| `security` | Seguridad del pipeline: permisos del workflow, SonarCloud, Trivy. Se usa con `ci` y `docs`. |
+| `deps` | Actualización de dependencias (`build(deps)` para Maven y Docker, `ci(deps)` para actions). Lo usa Dependabot. |
 
 ### Ejemplos reales (`git log`)
 
@@ -266,13 +268,75 @@ permite mergear el PR** hasta corregirlo con un nuevo commit en la misma rama.
 
 ---
 
+## Política de seguridad
+
+La seguridad se revisa en cuatro capas, cada una con una herramienta distinta. Ninguna reemplaza a las otras: una
+dependencia vulnerable puede no aparecer en el código, y un secreto expuesto no es una vulnerabilidad de librería.
+
+### Qué analiza cada herramienta
+
+| Herramienta | Qué analiza | Cuándo corre |
+|---|---|---|
+| **Dependabot** (`.github/dependabot.yml`) | Dependencias: `pom.xml` (Maven), imágenes base del `Dockerfile` y actions de los workflows. Abre PRs hacia `develop` con la versión nueva. | Revisión semanal (lunes) y, para avisos de seguridad, apenas se publica el aviso. |
+| **SonarCloud** (job `sonarcloud`) | Código fuente: bugs, vulnerabilidades, *security hotspots*, code smells, duplicación y cobertura (lee el XML de JaCoCo). Aplica el *quality gate* al código nuevo. | En cada PR hacia `develop`/`main` y en cada push a `develop`. |
+| **Trivy** (job `docker-build`) | La imagen Docker ya construida: paquetes de Alpine, el JRE y los JAR de la aplicación (Spring, Tomcat, Jackson...). | En cada ejecución del workflow, después de construir la imagen. |
+| **Secret scanning** (GitHub) | Credenciales en el repositorio (tokens, claves privadas, claves de Firebase/Google Cloud). Con *push protection* rechaza el push que contiene un secreto conocido. | En cada push, sobre todo el historial. |
+
+Los secretos del pipeline (`SONAR_TOKEN`) se guardan como *secrets* de Actions y de Dependabot, nunca en archivos.
+Los PRs de Dependabot reciben el secret de Dependabot, así que también pasan por SonarCloud.
+
+### Qué bloquea el merge y qué solo alerta
+
+| Resultado | Efecto |
+|---|---|
+| Trivy encuentra una vulnerabilidad **CRITICAL con corrección disponible** | **Bloquea**: falla `docker-build`, que es check requerido. |
+| Trivy encuentra vulnerabilidades **HIGH** (o CRITICAL sin corrección publicada) | Solo alerta: aparecen en el log del job y en *Security → Code scanning*. Las CRITICAL sin corrección se omiten (`ignore-unfixed`) porque no hay versión a la cual actualizar. |
+| El *quality gate* de SonarCloud falla | Falla el job `sonarcloud`. **Bloquea solo si `sonarcloud` está configurado como check requerido** en la protección de `main` y `develop` (recomendado); mientras no lo esté, se ve en rojo en el PR pero no impide el merge. |
+| Dependabot detecta una dependencia vulnerable | Alerta en *Security → Dependabot alerts* y abre un PR con la corrección. No bloquea por sí mismo; el PR pasa por el mismo CI. |
+| Secret scanning detecta un secreto | Con *push protection*, el push se rechaza antes de llegar al repositorio. Si el secreto ya estaba, queda una alerta en *Security → Secret scanning*. |
+
+**Criterio de Trivy**: una CRITICAL con corrección es grave y tiene solución concreta (subir de versión), así que no
+hay motivo para dejarla llegar a `develop`. Las HIGH se atienden en PRs propios (normalmente los de Dependabot), sin
+frenar todo el flujo por cada aviso nuevo.
+
+### Dónde se ven las alertas
+
+- **Pestaña Security del repositorio**: *Dependabot alerts*, *Code scanning* (resultados de Trivy, categoría
+  `trivy-imagen`) y *Secret scanning*.
+- **PRs de Dependabot**: llevan los labels `dependencies` y el del ecosistema (`java`, `github_actions`, `docker`);
+  las actualizaciones menores y de parche de Maven llegan juntas en un solo PR semanal.
+- **Dashboard de SonarCloud** (organización `dgomezpalacios`, proyecto `DGomezPalacios_charmeetchic_api`): issues,
+  hotspots, cobertura y estado del quality gate. En cada PR, SonarCloud también deja el resultado como check.
+- **Log del job `docker-build`**: tabla de Trivy con CRITICAL y HIGH.
+
+### Cómo se gestiona una alerta
+
+1. **Evaluar**: revisar el aviso (CVE, severidad, versión corregida) y si el código afectado se usa realmente en la API.
+2. **Corregir** en una rama propia hacia `develop` (`fix/*` o `feature/*`; `hotfix/*` sobre `main` si ya está en
+   producción y es grave), o aprobar el PR de Dependabot si el CI queda en verde. Commit con el scope que corresponda,
+   por ejemplo `build(deps): actualiza Spring Boot a 3.5.x`.
+3. **Verificar** que el check vuelva a verde y que la alerta se cierre sola en la pestaña Security al llegar a la rama
+   analizada.
+4. **Si no se puede corregir todavía** (no hay versión corregida o la actualización requiere una migración mayor):
+   documentar el riesgo aceptado **con una justificación escrita** y abrir un issue para retomarla. En Trivy se agrega
+   a `.trivyignore` con un comentario (qué es, por qué no aplica, por qué no se corrige ahora y cuándo se revisa) y
+   una fecha de vencimiento `exp:AAAA-MM-DD`: al vencer, la vulnerabilidad vuelve a bloquear. Ejemplo actual:
+   CVE-2026-47884 (`XsltView` de spring-webmvc, solo corregida en Spring Framework 7 / Spring Boot 4; la API no usa
+   vistas XSLT). En GitHub o SonarCloud, la alerta se descarta con el mismo tipo de justificación. Nunca se ocultan
+   hallazgos sin justificar.
+5. **Secreto expuesto**: revocar y rotar la credencial de inmediato (borrarla del historial no basta: hay que asumir
+   que ya fue copiada), actualizar el secret en GitHub y cerrar la alerta.
+
+---
+
 ## Estructura de carpetas
 
 ```
 charmeetchic_api/
 ├── .github/
 │   ├── workflows/
-│   │   └── ci.yml                    Pipeline de CI (build, tests, smoke test, artefactos)
+│   │   └── ci.yml                    Pipeline de CI (tests, cobertura, SonarCloud, imagen Docker + Trivy)
+│   ├── dependabot.yml                Actualizaciones automáticas de dependencias (Maven, Docker, Actions)
 │   └── pull_request_template.md      Plantilla obligatoria de PR
 ├── docs/
 │   └── workflow.md                   Diagramas del flujo GitFlow y del pipeline
@@ -295,9 +359,10 @@ charmeetchic_api/
 │   │       └── data.sql          Datos iniciales del catálogo
 │   └── test/
 │       └── java/com/charmeetchic/api/   Unitarias *Test (Mockito, surefire) e integración *IntegrationTest (MockMvc + H2, failsafe)
+├── .trivyignore                      Riesgos aceptados de Trivy, con justificación y vencimiento
 ├── CONTRIBUTING.md
 ├── README.md
-└── pom.xml                           Dependencias, build, separación de pruebas y cobertura (JaCoCo)
+└── pom.xml                           Spring Boot 3.5 (parent), dependencias, pruebas, cobertura y SonarCloud
 ```
 
 > El modelo de dominio vive en el paquete `entity` (no `model`), y el paquete de enumeraciones se llama `enums`

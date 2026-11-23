@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------------
-# Imagen del microservicio charmeetchic-api (Spring Boot 3.2, Java 17).
+# Imagen del microservicio charmeetchic-api (Spring Boot 3.5, Java 17).
 #
 #   docker build -t charmeetchic-api:local .
 #   docker run -d -p 8080:8080 charmeetchic-api:local
@@ -10,7 +10,10 @@
 # -----------------------------------------------------------------------------
 
 # ---------- Etapa 1: compilación (JDK + Maven, se descarta al final) ----------
-FROM maven:3.9-eclipse-temurin-17 AS build
+# Imagen fijada por versión exacta (Maven 3.9.16 sobre Temurin JDK 17) y por digest: el tag puede
+# volver a publicarse con otro contenido, el digest no. Así dos builds del mismo commit usan exactamente la
+# misma imagen. Dependabot (ecosistema docker) propone las actualizaciones de tag y digest.
+FROM maven:3.9.16-eclipse-temurin-17@sha256:1a352420f7aba21f5ad08df31bab55f74c013fb491f1ae8ab1dd7ff9ed698584 AS build
 WORKDIR /build
 
 # Cache de dependencias: primero solo el pom.xml. Mientras el pom no cambie, Docker reutiliza
@@ -23,16 +26,19 @@ COPY src ./src
 RUN mvn -B -q package -DskipTests \
     && cp target/charmeetchic-api-*.jar app.jar
 
-# Layered jar: Spring Boot 3.2 usa el modo layertools (jarmode=tools llegó en 3.3).
+# Layered jar con el modo tools (jarmode=layertools está obsoleto desde Spring Boot 3.3).
 # Separa el JAR en carpetas que van de lo que menos cambia a lo que más cambia:
 # dependencies, spring-boot-loader, snapshot-dependencies y application.
-RUN java -Djarmode=layertools -jar app.jar extract --destination extracted
+# --layers: una carpeta por capa. --launcher: deja el contenido con la estructura que espera JarLauncher
+# (BOOT-INF/, META-INF/, org/springframework/boot/loader/), igual que hacía layertools.
+RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
 # ---------- Etapa 2: ejecución (solo JRE, imagen liviana) ----------
 # Variante alpine: JRE 17 sobre Alpine (musl). La app es Java puro (Spring Web, JPA, H2 en
 # memoria, JJWT), sin librerías nativas, así que corre sin problemas y la imagen pesa mucho menos
 # que la variante Ubuntu. Además trae BusyBox, que incluye wget para el HEALTHCHECK.
-FROM eclipse-temurin:17-jre-alpine
+# Fijada a JRE 17.0.21.1 (build 2) por tag exacto y digest, por el mismo motivo que la etapa de build.
+FROM eclipse-temurin:17.0.21.1_2-jre-alpine@sha256:2b4113ae80e31f103b284dd3bc3e008add670cf8555417b5b289fa1128f2f0a3
 WORKDIR /app
 
 # Usuario de sistema sin privilegios: si la app se ve comprometida, no tiene root en el contenedor.
@@ -58,5 +64,5 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
     CMD wget -q -O /dev/null http://localhost:8080/api/health || exit 1
 
 # `exec` reemplaza al shell por la JVM (PID 1), así recibe SIGTERM y se apaga ordenadamente.
-# JarLauncher (paquete loader.launch desde Boot 3.2) arranca la app desde las capas extraídas.
+# JarLauncher (paquete loader.launch desde Boot 3.2) arranca la app desde las capas extraídas con --launcher.
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]

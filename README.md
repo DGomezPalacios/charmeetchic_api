@@ -5,7 +5,7 @@
 API REST para el **control de inventario** de la tienda de accesorios y joyas **Charme et Chic**, diseñada para
 crecer hacia un ecommerce (carrito, checkout, pagos).
 
-- **Stack:** Java 17+ · Spring Boot 3.2 · Spring Security · Spring Data JPA · H2 (desarrollo) · JWT · Maven
+- **Stack:** Java 17+ · Spring Boot 3.5 · Spring Security · Spring Data JPA · H2 (desarrollo) · JWT · Maven
 - **Autenticación:** **Firebase Authentication**. La API valida los *ID tokens* de Firebase (firma RS256 con las claves
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
