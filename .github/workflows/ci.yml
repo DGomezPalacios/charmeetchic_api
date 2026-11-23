@@ -204,7 +204,8 @@ jobs:
           -Dsonar.qualitygate.wait=true
 
   # Job docker-build: construye la imagen Docker, la escanea con Trivy y verifica que el contenedor arranque sano.
-  # Solo corre si build-and-test terminó en verde. La imagen NO se publica en ningún registro.
+  # Solo corre si build-and-test terminó en verde. Esta imagen NO se publica: la publica publish-image (solo en
+  # push), una vez que este job, el escaneo de Trivy incluido, terminó en verde.
   docker-build:
     runs-on: ubuntu-latest
     needs: build-and-test
@@ -229,6 +230,26 @@ jobs:
       - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # Labels OCI generadas por metadata-action a partir del evento de Git, no escritas a mano: revision
+      # (commit), source (repositorio), created (fecha del build) y version. version sale del tag con mayor
+      # prioridad: X.Y.Z en un tag de Git vX.Y.Z, el nombre de la rama en un push y pr-<número> en un PR.
+      # Así no queda un "0.0.1-SNAPSHOT" fijo que se desactualiza al cambiar el pom.xml (review del PR #10).
+      # Las mismas reglas de tags que publish-image, para que ambas imágenes tengan las mismas labels; los
+      # tags raw (<sha completo> y ci) son los nombres locales que usan Trivy y la verificación del contenedor.
+      - name: Metadatos de la imagen (tags y labels OCI)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: charmeetchic-api
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ github.sha }}
+            type=raw,value=ci
+
       # Construye la imagen y la carga en el Docker del runner (load: true) sin publicarla (push: false).
       # Las labels OCI permiten rastrear desde qué commit y repositorio se generó la imagen.
       - name: Construir imagen Docker
@@ -237,13 +258,8 @@ jobs:
           context: .
           push: false
           load: true
-          tags: |
-            charmeetchic-api:${{ github.sha }}
-            charmeetchic-api:ci
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=0.0.1-SNAPSHOT
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           # Reutiliza las capas entre ejecuciones (dependencias Maven, JRE base, etc.)
           cache-from: type=gha
           cache-to: type=gha,mode=max
