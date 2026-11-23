@@ -541,6 +541,280 @@ La API está pensada para separarse por dominios sin reescribir la seguridad:
 
 ---
 
+## Pipeline CI/CD (Evaluación 2)
+
+Todo el pipeline vive en un solo workflow de GitHub Actions, [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+Valida cada PR antes del merge (pruebas, cobertura, análisis estático, imagen Docker escaneada y manifiestos de
+Kubernetes) y, tras el merge, publica la imagen en GitHub Container Registry (GHCR) y la despliega automáticamente en
+un clúster Kubernetes (kind) que simula el entorno cloud.
+
+### Diagrama del pipeline
+
+```mermaid
+flowchart TD
+    subgraph EV["Eventos que disparan el workflow"]
+        PRD["pull_request → develop"]
+        PRM["pull_request → main"]
+        PSD["push a develop<br/>(merge de una feature)"]
+        PSM["push a main<br/>(merge de release o hotfix)"]
+        TAG["push de tag vX.Y.Z"]
+    end
+
+    GG["<b>gitflow-guard</b><br/>solo PR → main<br/>rama de origen develop o hotfix/*"]
+    BT["<b>build-and-test</b><br/>unitarias · integración · JaCoCo<br/>smoke test del JAR"]
+    SC["<b>sonarcloud</b><br/>análisis + quality gate<br/>(no corre en tags)"]
+    DB["<b>docker-build</b><br/>build · Trivy · contenedor healthy"]
+    KV["<b>k8s-validate</b><br/>kustomize build + kubeconform"]
+    PI["<b>publish-image</b><br/>solo push · GHCR · SBOM<br/>provenance · atestación"]
+    DE["<b>deploy</b><br/>solo push a develop o main<br/>kind + smoke test en el clúster"]
+    STG[("environment<br/>staging")]
+    PRO[("environment<br/>production")]
+
+    PRM --> GG
+    PRD & PRM & PSD & PSM & TAG --> BT
+    BT -->|needs| SC
+    BT -->|needs| DB
+    BT -->|needs| KV
+    BT & DB -->|needs| PI
+    PI & KV -->|needs| DE
+    DE -->|"push a develop · overlay dev"| STG
+    DE -->|"push a main · overlay prod"| PRO
+```
+
+En un PR corren `build-and-test`, `sonarcloud`, `docker-build` y `k8s-validate` (más `gitflow-guard` si la base es
+`main`): son los checks requeridos. En un push a `develop` o `main` corre la cadena completa hasta `deploy`. En un tag
+`vX.Y.Z` se publica la imagen con los tags de versión, sin `sonarcloud` (el commit ya se analizó al llegar a `main`) y
+sin `deploy` (ya se desplegó en el push a `main`).
+
+### Jobs
+
+| Job | Qué hace | Cuándo corre | Depende de (`needs`) | ¿Check requerido? | Qué bloquea si falla |
+|---|---|---|---|---|---|
+| `gitflow-guard` | Comprueba que la rama de origen del PR sea `develop` (release) o `hotfix/*`. | PR hacia `main` | — | Sí, solo en `main` | El merge del PR hacia `main`. |
+| `build-and-test` | `mvn -B test` (unitarias), `mvn -B verify -DskipUTs=true` (integración + JAR + umbrales de JaCoCo), smoke test del JAR contra `/api/health`. Publica resumen de tests y cobertura y sube los reportes como artefactos. | PR, push a `develop`/`main`, tag | — | Sí, en `main` y `develop` | El merge y todos los jobs siguientes. |
+| `sonarcloud` | `mvn verify` + scanner de SonarCloud con `-Dsonar.qualitygate.wait=true`. | PR (no forks), push a `develop`/`main` | `build-and-test` | Sí, en `main` y `develop` | El merge, si el quality gate falla. |
+| `docker-build` | Construye la imagen con labels OCI, la escanea con Trivy, levanta el contenedor y espera el estado `healthy` + `/api/health`. Sube el SARIF a Code Scanning. | PR, push a `develop`/`main`, tag | `build-and-test` | Sí, en `main` y `develop` | El merge y `publish-image` (CRITICAL corregible o contenedor no sano). |
+| `k8s-validate` | Renderiza los overlays `dev` y `prod` con Kustomize y valida cada recurso con `kubeconform -strict` contra Kubernetes 1.35.8. | PR, push a `develop`/`main`, tag | `build-and-test` | Sí, en `main` y `develop` | El merge y `deploy`. |
+| `publish-image` | Publica la imagen en `ghcr.io/dgomezpalacios/charmeetchic-api` con tags trazables, labels y anotaciones OCI, SBOM, provenance y atestación firmada. | Solo push (`develop`, `main`, tag) | `build-and-test`, `docker-build` | No (no corre en PRs) | `deploy`. |
+| `deploy` | Crea un clúster kind, carga la imagen verificando su digest, aplica el overlay con Kustomize, espera los rollouts y hace un smoke test desde dentro del clúster. Registra un GitHub Deployment. | Solo push a `develop` (staging) o `main` (production) | `publish-image`, `k8s-validate` | No (no corre en PRs) | — (último eslabón; si falla, el entorno queda marcado como fallido en *Deployments*). |
+
+`publish-image` y `deploy` no pueden ser checks requeridos: no corren en los PRs, así que GitHub esperaría un check
+que nunca aparece. Una ejecución por PR a la vez: un commit nuevo cancela la ejecución anterior del mismo PR; en los
+push no se cancela, para no cortar una publicación o un despliegue a la mitad (`concurrency`).
+
+### Cómo se garantiza la calidad
+
+**1. Pruebas automatizadas en dos niveles**, en steps separados para identificar qué falló:
+
+- **Unitarias** (clases `*Test`, `maven-surefire-plugin`): servicios con Mockito, `JwtService` con un par RSA propio,
+  filtro JWT, manejador de errores y health.
+- **Integración** (clases `*IntegrationTest`, `maven-failsafe-plugin`): levantan el contexto completo de Spring con H2
+  y prueban la API por HTTP (MockMvc): `ApiIntegrationTest` (matriz de acceso por rol, órdenes, reportes, errores,
+  CORS) y `FirebaseAuthIntegrationTest` (cadena de seguridad con tokens RS256 reales y falsificados).
+- **Pruebas de humo** en tres puntos: el JAR (`build-and-test`), el contenedor con su `HEALTHCHECK` (`docker-build`)
+  y la aplicación ya desplegada en Kubernetes, desde un pod dentro del clúster, que además comprueba que la versión
+  de `/api/health` coincida con la del `pom.xml` (`deploy`).
+
+**2. Cobertura con JaCoCo y umbrales que hacen fallar el build.** La cobertura es combinada (unitarias +
+integración) y la regla `check` del `pom.xml` corre en `mvn verify`: si baja de un umbral, falla `build-and-test`, que
+es check requerido.
+
+| Alcance | Líneas (mínimo) | Ramas (mínimo) |
+|---|---:|---:|
+| Todo el proyecto (`BUNDLE`) | 93 % | 82 % |
+| Paquete `com.charmeetchic.api.service` (reglas de negocio y validación de tokens) | 95 % | 85 % |
+
+Se excluyen de la medición la clase `main`, los DTOs y las entidades (sin lógica propia). El Job Summary muestra los
+tests por tipo y el % de líneas y ramas; el reporte HTML queda como artefacto `reporte-cobertura`.
+
+**3. Quality gate de SonarCloud** (organización `dgomezpalacios`, proyecto `DGomezPalacios_charmeetchic_api`): analiza
+bugs, vulnerabilidades, *security hotspots*, code smells, duplicación y cobertura (lee el XML de JaCoCo, con las
+mismas exclusiones, para que el % coincida con el del pipeline). El job espera el resultado del quality gate y falla
+si no se cumple. Se descarga el historial completo (`fetch-depth: 0`) para que SonarCloud distinga el código nuevo.
+Los badges del inicio muestran el estado actual.
+
+**4. Protección de ramas** en `main` y `develop` (configurada en GitHub):
+
+| Regla | `main` | `develop` |
+|---|---|---|
+| Cambios solo mediante Pull Request | Sí | Sí |
+| Checks requeridos | `gitflow-guard`, `build-and-test`, `sonarcloud`, `docker-build`, `k8s-validate` | `build-and-test`, `sonarcloud`, `docker-build`, `k8s-validate` |
+| Conversaciones resueltas antes del merge | Sí | Sí |
+| Las reglas aplican también a administradores | Sí | Sí |
+| Force push | Bloqueado | Bloqueado |
+
+**5. Revisión de código con conversaciones resueltas.** El proyecto es individual y GitHub no permite aprobar un PR
+propio, así que no se exige una aprobación formal (0 aprobaciones): la revisión se documenta con comentarios en línea
+sobre el diff y cada conversación debe quedar resuelta (con un commit o una respuesta) para poder mergear. Los PR usan
+la plantilla [`.github/pull_request_template.md`](.github/pull_request_template.md), se mergean con *merge commit*
+(sin squash, para conservar los commits individuales) y los commits siguen Conventional Commits. Detalle en
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Cómo se garantiza la seguridad
+
+| Control | Cómo está implementado |
+|---|---|
+| **Dependabot** | [`.github/dependabot.yml`](.github/dependabot.yml): cuatro ecosistemas (Maven, GitHub Actions, Docker y npm de `scripts/firebase`), revisión semanal (lunes 07:00, `America/Santiago`), PRs hacia `develop` que pasan por el mismo CI. Menores y parches de Maven agrupados en un PR. *Security updates* activado: las alertas de seguridad se abren apenas se publica el aviso. |
+| Reglas `ignore` de Dependabot | Solo se ignoran **versiones mayores**, que son decisiones de arquitectura y no actualizaciones automáticas: `spring-boot-starter-parent` (la migración a Spring Boot 4 está planificada para el 13-12-2026), `eclipse-temurin` (la app se mantiene en Java 17 LTS) y `maven` (imagen de build). Menores, parches y nuevos digest siguen llegando. Limitación documentada: en el tag `3.9.16-eclipse-temurin-17` Dependabot toma la versión de Maven, no la del JDK, así que un PR que cambie el JDK se cierra a mano (ejemplo: PR #20). |
+| **SonarCloud** | SAST sobre el código fuente: vulnerabilidades y *security hotspots* forman parte del quality gate, que es check requerido. |
+| **Trivy** (job `docker-build`) | Escanea la imagen final (paquetes de Alpine, JRE y JAR de `BOOT-INF/lib`) con Trivy `v0.76.2` fijado. Reporta CRITICAL y HIGH con `ignore-unfixed` en el log y como SARIF en *Security → Code scanning* (categoría `trivy-imagen`). **Gate:** falla el job ante una CRITICAL con corrección disponible; las HIGH se reportan sin bloquear y se atienden vía Dependabot. |
+| **`.trivyignore` con vencimiento** | Riesgos aceptados explícitos: `CVE-2026-47884` (XsltView) y `CVE-2026-47890` (SSE en Spring MVC), ambas en `spring-webmvc`, no explotables en esta API REST (no usa vistas XSLT ni SSE) y corregidas solo en Spring Boot 4. Cada una lleva su justificación y `exp:2026-12-13`: al vencer, la vulnerabilidad vuelve a aparecer y a bloquear el pipeline. |
+| **Secret scanning** | Activado en el repositorio con *push protection*: GitHub rechaza un push que contenga un secreto conocido. Además, `.gitignore` y `.dockerignore` excluyen `.env` y las claves de Firebase, y el `SONAR_TOKEN` llega a Maven solo como variable de entorno. |
+| **Permisos mínimos** | El `GITHUB_TOKEN` es `contents: read` por defecto. Solo amplían: `docker-build` (`security-events: write`, para el SARIF), `publish-image` (`packages: write`, `id-token: write`, `attestations: write`) y `deploy` (`packages: read`). `gitflow-guard` no tiene ningún permiso (`permissions: {}`). Las contraseñas del despliegue se generan en el runner y se enmascaran (`::add-mask::`). |
+| **Actions fijadas por SHA** | Las actions de terceros (`docker/setup-buildx-action`, `docker/metadata-action`, `docker/build-push-action`, `docker/login-action`, `aquasecurity/trivy-action`) se fijan por el SHA completo del commit, con la versión en un comentario: un tag se puede mover a otro commit, un SHA no. Dependabot actualiza ambos. Las actions oficiales de GitHub (`actions/*`, `github/codeql-action`) se usan por versión mayor. |
+| **Descargas solo por HTTPS** | kustomize, kubeconform, kind y kubectl se descargan con `curl --proto '=https' --tlsv1.2` (también en las redirecciones) en versiones fijas, y cada binario se verifica contra su SHA-256 antes de ejecutarlo. |
+| **Imágenes base fijadas por digest** | `maven:3.9.16-eclipse-temurin-17@sha256:…` (build), `eclipse-temurin:17.0.21.1_2-jre-alpine@sha256:…` (ejecución), `postgres:17.12-alpine3.24@sha256:…` y `kindest/node:v1.35.8@sha256:…`: el mismo commit construye siempre sobre la misma imagen. |
+
+Política completa (qué bloquea y qué no, cómo revisar los resultados) en
+[CONTRIBUTING.md](CONTRIBUTING.md#política-de-seguridad).
+
+### Cómo se garantiza la trazabilidad
+
+Desde cualquier pod en ejecución se puede llegar al commit que lo originó, y desde un commit a la imagen y a los
+despliegues que lo usaron:
+
+```mermaid
+flowchart LR
+    C["Commit<br/>(PR + merge commit)"] --> I["Imagen en GHCR<br/>tag sha-&lt;commit&gt; · digest<br/>labels OCI · SBOM<br/>provenance · atestación"]
+    I --> D["Despliegue en Kubernetes<br/>imagen sha-&lt;commit&gt; · digest verificado<br/>anotaciones git-commit · change-cause<br/>rollout history"]
+    D --> G["GitHub Deployment<br/>staging / production<br/>→ ejecución del workflow"]
+```
+
+**1. Commit → imagen** (job `publish-image`, imagen `ghcr.io/dgomezpalacios/charmeetchic-api`):
+
+| Elemento | Valor |
+|---|---|
+| Tag inmutable | `sha-<7 caracteres del commit>`: identifica exactamente el commit; es el que usa el despliegue. |
+| Tags móviles | `develop` / `main` (lo último de cada rama) y `X.Y.Z` / `X.Y` en un tag de Git `vX.Y.Z`. |
+| Digest | `sha256:…` del manifiesto; se publica en el Job Summary y lo recibe el job `deploy`. |
+| Labels y anotaciones OCI | `org.opencontainers.image.revision` (commit completo), `source` (repositorio), `created`, `version`; generadas por `docker/metadata-action`, no escritas a mano. |
+| SBOM | Lista de paquetes y JAR de la imagen, adjunta a la imagen en el registro (`sbom: true`). |
+| Provenance | Atestación SLSA de BuildKit (`provenance: mode=max`): cómo, cuándo y desde qué commit se construyó. |
+| Atestación de GitHub | `actions/attest-build-provenance`, firmada con Sigstore (OIDC) y asociada al digest. |
+
+**2. Imagen → despliegue** (job `deploy`): se despliega la imagen por su tag `sha-<commit>` y antes se comprueba que
+su digest sea el que publicó `publish-image`. El Deployment recibe:
+
+- `kubernetes.io/change-cause`: `Despliegue <entorno> del commit <sha> (run <número>)`, visible en la columna
+  CHANGE-CAUSE de `kubectl rollout history`.
+- En cada pod: `charmeetchic.cl/git-commit` (commit completo), `charmeetchic.cl/image-digest` y
+  `charmeetchic.cl/workflow-run` (enlace a la ejecución), y la label `app.kubernetes.io/version`.
+
+**3. Despliegue → GitHub Deployments**: el job usa GitHub Environments (`staging` para `develop`, `production` para
+`main`), así que cada despliegue queda registrado en la pestaña *Deployments* con su commit, su estado y un enlace a la
+ejecución, cuyo Job Summary muestra imagen, digest, pods, `rollout history` y el resultado del smoke test.
+
+**Cómo verificar cada eslabón:**
+
+```bash
+IMAGE=ghcr.io/dgomezpalacios/charmeetchic-api
+TAG=sha-1a2b3c4            # sha- + 7 primeros caracteres del commit
+
+# Imagen → commit: labels OCI (revision = commit completo, source = repositorio)
+docker pull "$IMAGE:$TAG"
+docker inspect --format '{{json .Config.Labels}}' "$IMAGE:$TAG"
+docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE:$TAG"
+
+# Digest, SBOM y provenance adjuntos a la imagen en el registro
+docker buildx imagetools inspect "$IMAGE:$TAG"
+docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .SBOM}}'
+docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{json .Provenance}}'
+
+# Atestación firmada: la imagen salió de este repositorio y de este workflow
+gh attestation verify "oci://$IMAGE@sha256:<digest>" --repo DGomezPalacios/charmeetchic_api
+
+# Despliegue → commit (en el clúster; en el CI estas salidas quedan en el Job Summary del job deploy)
+kubectl -n charmeetchic rollout history deployment/charmeetchic-api
+kubectl -n charmeetchic get deployment charmeetchic-api -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+kubectl -n charmeetchic get pods -l app.kubernetes.io/name=charmeetchic-api \
+  -o custom-columns='POD:.metadata.name,VERSION:.metadata.labels.app\.kubernetes\.io/version,COMMIT:.metadata.annotations.charmeetchic\.cl/git-commit,DIGEST:.metadata.annotations.charmeetchic\.cl/image-digest'
+
+# GitHub Deployments: qué commit se desplegó en cada entorno y cuándo
+gh api repos/DGomezPalacios/charmeetchic_api/deployments \
+  --jq '.[] | {environment, sha: .sha[0:7], created_at}'
+```
+
+### Contenedores y orquestación
+
+**Dockerfile** (multi-etapa):
+
+- **Build:** `maven:3.9.16-eclipse-temurin-17` fijada por digest. Copia primero solo el `pom.xml` (las dependencias
+  quedan en caché mientras no cambie) y luego `src/`; extrae el *layered jar* de Spring Boot.
+- **Ejecución:** `eclipse-temurin:17.0.21.1_2-jre-alpine` fijada por digest: solo JRE, imagen liviana. Una capa por
+  carpeta del layered jar (al cambiar el código solo se reconstruye la última).
+- Usuario sin privilegios (`app`, UID 1001), `HEALTHCHECK` contra `/api/health` con el `wget` de BusyBox,
+  `JAVA_OPTS=-XX:MaxRAMPercentage=75.0` (heap según el límite de memoria) y la JVM como PID 1 para apagarse
+  ordenadamente con SIGTERM.
+- `.dockerignore` deja fuera secretos, `.git`, `target/`, documentación, scripts y manifiestos.
+
+**Kubernetes** ([`k8s/`](k8s), Kustomize con una base y overlays `dev`/`prod`):
+
+| Aspecto | Configuración |
+|---|---|
+| Réplicas | Deployment de la API: 2 (base y `dev`), 3 (`prod`). RollingUpdate `maxUnavailable: 0` / `maxSurge: 1` (sin caída) y `topologySpreadConstraints` para repartir los pods entre nodos. |
+| HPA | Por CPU al 70 %: 2–5 réplicas (base), 2–3 (`dev`), 3–10 (`prod`). Sube rápido y baja con 5 minutos de estabilización. |
+| PDB | `minAvailable: 1` (base/`dev`), `2` (`prod`): un mantenimiento del nodo (drain) no deja la API sin pods. |
+| Probes | `startupProbe`, `readinessProbe` y `livenessProbe` sobre `/api/health` (la de arranque da hasta 180 s a Spring Boot). `preStop` de 10 s para drenar conexiones. |
+| securityContext | Namespace con Pod Security `restricted`; `runAsNonRoot` (UID 1001), `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]` y sin token de ServiceAccount montado. |
+| Recursos | `requests`/`limits` por contenedor: 100m/512Mi en `dev`, 500m/1Gi en `prod`. |
+| NetworkPolicy | Solo los pods de la API pueden conectarse a PostgreSQL (puerto 5432). |
+| PostgreSQL | StatefulSet de 1 réplica (`postgres:17.12-alpine3.24` por digest) con volumen persistente propio (1Gi, 10Gi en `prod`) y Service headless. La API usa el perfil `k8s` y un initContainer espera a que la base esté lista. Credenciales en un Secret creado fuera del repositorio. |
+
+Arquitectura, justificación de cada parámetro y resultados observados en kind: [docs/kubernetes.md](docs/kubernetes.md).
+
+### Cómo ejecutarlo localmente
+
+**Con Docker:**
+
+```bash
+docker build -t charmeetchic-api:local .
+docker run -d --name cc-api -p 8080:8080 charmeetchic-api:local
+docker inspect --format '{{.State.Health.Status}}' cc-api    # esperar "healthy"
+curl http://localhost:8080/api/health
+```
+
+**Con Kubernetes en kind** (Git Bash, desde la raíz del repositorio; requiere Docker, kind, kubectl y openssl):
+
+```bash
+# 1. Clúster de 3 nodos
+kind create cluster --config k8s/kind-config.yaml
+
+# 2. Imagen local cargada en los nodos
+docker build -t charmeetchic-api:local .
+kind load docker-image charmeetchic-api:local --name charmeetchic
+
+# 3. Namespace y Secrets (contraseñas aleatorias, no quedan en ningún archivo)
+kubectl apply -f k8s/base/namespace.yaml
+kubectl -n charmeetchic create secret generic postgres-credentials \
+  --from-literal=POSTGRES_USER=charmeetchic --from-literal=POSTGRES_PASSWORD="$(openssl rand -base64 24)"
+kubectl -n charmeetchic create secret generic charmeetchic-api-jwt-local \
+  --from-literal=JWT_LOCAL_SECRET="$(openssl rand -hex 32)"
+
+# 4. Desplegar el overlay dev y esperar
+kubectl apply -k k8s/overlays/dev
+kubectl -n charmeetchic rollout status statefulset/postgres
+kubectl -n charmeetchic rollout status deployment/charmeetchic-api
+
+# 5. Probar
+kubectl -n charmeetchic port-forward svc/charmeetchic-api 8080:80
+curl http://localhost:8080/api/health        # en otra terminal
+
+# Limpieza
+kind delete cluster --name charmeetchic
+```
+
+Para que el HPA lea la CPU hace falta metrics-server (paso 2 de
+[Despliegue en kind paso a paso](docs/kubernetes.md#despliegue-en-kind-paso-a-paso)).
+
+### Más información
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): GitFlow, convención de commits, flujo de merge, revisión, política de calidad y
+  de seguridad.
+- [docs/workflow.md](docs/workflow.md): diagramas de GitFlow y del pipeline, y qué job corre en cada evento.
+- [docs/kubernetes.md](docs/kubernetes.md): orquestación, despliegue en kind y despliegue automático.
+
+---
+
 ## Justificación del modelo de ramificación
 
 Cuando integré las dos ramas feature dentro de `develop`, la rama `main` no sufrió ningún cambio. En una tienda real como Charme et Chic esto es fundamental: `main` representa lo que los clientes están usando para comprar en tiempo real, por lo que no podemos arriesgar la estabilidad de la producción mientras desarrollamos el carrito o la pasarela de pagos. Aunque existen alternativas como GitHub Flow, este modelo envía cada integración directamente a `main`, careciendo de una capa de aislamiento como `develop` para acumular funcionalidades grandes antes de lanzarlas. Por otro lado, Trunk-Based Development exige una alta madurez técnica y el uso intensivo de feature flags (conmutadores de código) para ocultar cambios incompletos en producción, algo inviable sin un equipo dedicado. En nuestro contexto colaborativo en la nube, la combinación de GitHub y GitHub Actions es el eje del flujo: GitHub centraliza el código y gestiona los Pull Requests con reglas de protección, mientras que Actions ejecuta automáticamente el workflow con los steps de `mvn -B verify` (que compila, ejecuta la suite de pruebas unitarias e integración —incluidas `FirebaseAuthIntegrationTest` y `ApiIntegrationTest` con H2— y empaqueta el JAR) seguido del smoke test al endpoint `/api/health` antes de autorizar la fusión.
