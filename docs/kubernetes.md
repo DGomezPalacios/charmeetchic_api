@@ -108,9 +108,14 @@ Ningún Secret con valores reales está en el repositorio. Los manifiestos solo 
 **En local (kind)** se crean con `kubectl` y una contraseña aleatoria (paso 4 del despliegue). La contraseña no queda
 en ningún archivo.
 
-**En el CI/CD** (cuando exista un job de despliegue): la contraseña se guarda como secret de GitHub (*Settings →
-Secrets and variables → Actions*, por ejemplo `POSTGRES_PASSWORD`, idealmente en un *environment* con aprobación) y
-el job la pasa por variable de entorno, sin escribirla en disco ni en el log:
+**En el CI/CD (job `deploy`)**: el clúster es efímero (kind en el runner), así que las contraseñas se **generan en el
+runner** en cada despliegue (`openssl rand`), se enmascaran con `::add-mask::` y se pasan a `kubectl create secret`
+sin imprimirse ni escribirse en disco. Nadie las conoce y desaparecen con el clúster. Ver
+[Despliegue automático](#despliegue-automático).
+
+**En un clúster real y persistente** la contraseña no puede cambiar en cada despliegue (la base ya está inicializada
+con ella): se guarda como secret del *environment* de GitHub (*Settings → Environments → production → Environment
+secrets*, por ejemplo `POSTGRES_PASSWORD`) y el job la pasa por variable de entorno:
 
 ```bash
 kubectl -n charmeetchic create secret generic postgres-credentials \
@@ -119,7 +124,7 @@ kubectl -n charmeetchic create secret generic postgres-credentials \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-El job actual `k8s-validate` no necesita el Secret: valida los manifiestos sin aplicarlos.
+El job `k8s-validate` no necesita el Secret: valida los manifiestos sin aplicarlos.
 
 > Un Secret de Kubernetes solo está codificado en base64, no cifrado. En producción conviene activar el cifrado en
 > reposo de etcd y/o un gestor externo (External Secrets Operator, Sealed Secrets, Secret Manager del proveedor).
@@ -239,6 +244,103 @@ kind delete cluster --name charmeetchic   # borra el clúster
 
 ---
 
+## Despliegue automático
+
+Cada push a `develop` o `main` (es decir, cada merge de un PR) despliega automáticamente la API en un **entorno cloud
+simulado**: un clúster kind creado dentro del runner de GitHub Actions, con los mismos manifiestos y el mismo
+`kind-config.yaml` que en local. Lo hacen los jobs `publish-image` y `deploy` de
+[`ci.yml`](../.github/workflows/ci.yml); el pipeline completo y la cadena de trazabilidad están en
+[workflow.md](workflow.md#pipeline-de-cicd).
+
+| Rama | GitHub Environment | Overlay | Réplicas / HPA | `JWT_MODE` |
+|---|---|---|---|---|
+| `develop` | `staging` | `k8s/overlays/dev` | 2 / 2-3 | `local` |
+| `main` | `production` | `k8s/overlays/prod` | 3 / 3-10 | `firebase` |
+
+Un tag `vX.Y.Z` no despliega (su commit ya se desplegó al llegar a `main`): solo publica la imagen con los tags
+`X.Y.Z` y `X.Y`.
+
+### Flujo
+
+```mermaid
+sequenceDiagram
+    participant G as Push a develop / main
+    participant P as publish-image
+    participant R as ghcr.io
+    participant D as deploy (runner)
+    participant K as Clúster kind
+    G->>P: build-and-test y docker-build en verde
+    P->>R: push imagen (sha-commit, rama) + SBOM + provenance
+    P-->>D: outputs: imagen, tag sha-commit, digest
+    Note over D: needs también k8s-validate
+    D->>K: kind create cluster (k8s/kind-config.yaml)
+    D->>R: docker pull imagen:sha-commit
+    D->>D: verifica que el digest sea el publicado
+    D->>K: kind load docker-image
+    D->>K: namespace + Secrets (contraseñas de openssl rand)
+    D->>D: kustomize edit: imagen sha-commit + patch de trazabilidad
+    D->>K: kubectl apply -k overlay
+    D->>K: rollout status (PostgreSQL 300 s, API 600 s)
+    D->>K: pod smoke-test: /api/health UP + versión, /api/products 200
+    D-->>G: Job Summary + deployment en staging / production
+```
+
+### Qué fija el despliegue
+
+`deploy` modifica el overlay **solo dentro del runner** (no se commitea) con `kustomize edit`:
+
+- `kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api:sha-<commit>`: la imagen por
+  su tag inmutable. Se usa el tag y no `@digest` porque la imagen se carga en los nodos con `kind load` (sin
+  registro); el digest se verifica antes de cargarla y queda en una anotación.
+- Un patch **solo del Deployment de la API** (PostgreSQL no se toca ni se reinicia):
+
+  | Campo | Valor |
+  |---|---|
+  | `metadata.annotations.kubernetes.io/change-cause` | `Despliegue <entorno> del commit <sha> (run <número>)` → columna CHANGE-CAUSE de `kubectl rollout history` |
+  | `charmeetchic.cl/git-commit` (pod) | SHA completo del commit |
+  | `charmeetchic.cl/image-digest` (pod) | digest `sha256:…` publicado por `publish-image` |
+  | `charmeetchic.cl/workflow-run` (pod) | URL de la ejecución del workflow |
+  | `app.kubernetes.io/version` (Deployment y pod) | versión del `pom.xml` (la que responde `/api/health`) |
+
+### Smoke test
+
+Después del rollout, [`k8s/ci/smoke-test-pod.yaml`](../k8s/ci/smoke-test-pod.yaml) crea un pod con curl
+(`curlimages/curl` fijado por digest) **dentro del clúster**, que llama a la API a través del Service, igual que otro
+servicio del clúster:
+
+- `GET /api/health` debe responder 200 con `"status":"UP"` y `"version"` igual a la versión desplegada.
+- `GET /api/products` debe responder 200 (la API llega a PostgreSQL y lee el catálogo).
+
+El pod termina en `Succeeded` o `Failed` y el job falla en el segundo caso. Si cualquier paso falla, el job imprime
+`kubectl get pods`, `describe`, los eventos y los logs de la API antes de terminar en rojo. El pod cumple el nivel
+`restricted` de Pod Security, como el resto del namespace.
+
+### Recursos del runner
+
+Los runners `ubuntu-latest` de un repositorio público tienen 4 vCPU y 16 GB de RAM, y **cada nodo de kind ve toda la
+CPU y la memoria del runner** como capacidad asignable. Los requests del overlay prod (3 réplicas × 500m/1Gi, más 1
+réplica extra durante el rolling update, más PostgreSQL 500m/1Gi: 2,5 CPU y 5 Gi en total) caben sin cambiar los
+manifiestos, así que **no se ajustó el overlay prod**. El costo es que las 3 réplicas arrancan compartiendo 4 vCPU;
+la `startupProbe` (hasta 180 s) y el timeout del rollout (600 s) lo toleran. En la simulación local, el despliegue
+completo de prod quedó Ready en unos 50 s.
+
+No se instala metrics-server en el clúster efímero (vive pocos minutos y no recibe carga), así que ahí el HPA muestra
+`<unknown>` en la CPU y mantiene las réplicas mínimas. El autoscaling se probó en kind local (ver
+[Resultado observado](#resultado-observado-en-kind-kubernetes-1358-3-nodos)).
+
+### GitHub Environments y Deployments
+
+- Los entornos `staging` y `production` se crean solos en la primera ejecución. En *Settings → Environments* se puede
+  exigir **aprobación manual** (*Required reviewers*) para `production` y restringir qué ramas pueden desplegar en
+  cada uno (*Deployment branches*: `develop` → staging, `main` → production).
+- Cada ejecución de `deploy` crea un **deployment** en la pestaña *Deployments* del repositorio, con el commit, el
+  estado y el enlace a la ejecución (cuyo Job Summary muestra pods, nodos, rollout history y smoke test).
+- `publish-image` y `deploy` **no son checks requeridos** de los PRs: no corren en `pull_request`, así que su check
+  nunca aparecería y bloquearía todos los merges. Un fallo después del merge se ve en *Actions*, en el badge del
+  README y en el historial del entorno; se corrige con un nuevo PR (o un `hotfix/*` si afecta a `main`).
+
+---
+
 ## Justificación de parámetros
 
 ### Escalabilidad y disponibilidad
@@ -312,8 +414,14 @@ carga, lo que sirve para verlo en acción.
   para que dos réplicas no migren a la vez. Hoy, si dos réplicas arrancan exactamente al mismo tiempo sobre una base
   vacía, una podría fallar por la restricción UNIQUE al cargar `data.sql` y Kubernetes la reiniciaría (en la prueba no
   ocurrió).
-- **Overlay prod sin imagen publicada**: el job `docker-build` construye y escanea la imagen, pero no la publica en un
-  registro. Para desplegar prod hay que publicarla (por ejemplo, en GHCR) y fijar el digest con
-  `kustomize edit set image`.
+- **Entorno cloud simulado**: `deploy` despliega en un kind efímero dentro del runner, que se borra al terminar el
+  job; no queda una API accesible después. Demuestra el proceso completo (imagen publicada, manifiestos, rollout,
+  smoke test y trazabilidad). Para un entorno real bastaría con reemplazar la creación del clúster por las
+  credenciales de un clúster gestionado (GKE, EKS, AKS) guardadas en el *environment*, y la contraseña de PostgreSQL
+  generada por un secret persistente.
+- **La imagen publicada se reconstruye**: `publish-image` vuelve a construir la imagen con el mismo cache `gha` que
+  `docker-build` (las capas se reutilizan) en vez de transferir la imagen ya escaneada. Para garantizar que se
+  publica byte a byte la imagen escaneada, `docker-build` tendría que publicarla en un tag temporal y
+  `publish-image` solo retaguearla.
 - **Sin Ingress**: el Service es ClusterIP; en kind se accede con `kubectl port-forward`. En un clúster real se agrega
   un Ingress (o Gateway API) con TLS.

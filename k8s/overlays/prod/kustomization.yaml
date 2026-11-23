@@ -3,9 +3,11 @@
 #
 #   kubectl apply -k k8s/overlays/prod
 #
-# Requisito: la imagen publicada en un registro. Hoy el CI construye y escanea la imagen pero NO la publica
-# (job docker-build); al publicarla, el despliegue fijaría el tag por commit o, mejor, por digest:
-#   cd k8s/overlays/prod && kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api@sha256:<digest>
+# Lo despliega automáticamente el job "deploy" del CI en cada push a main (GitHub Environment "production"):
+# publish-image publica la imagen en ghcr.io y deploy fija aquí, solo dentro del runner, el tag inmutable del
+# commit y las anotaciones de trazabilidad (ver docs/kubernetes.md, "Despliegue automático"):
+#   kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api:sha-<commit>
+# El tag de abajo es solo el valor por defecto para un despliegue manual.
 # -----------------------------------------------------------------------------
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
