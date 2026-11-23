@@ -142,7 +142,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                                                                             HttpStatusCode status,
                                                                             WebRequest request) {
         Map<String, String> errors = new LinkedHashMap<>();
-        ex.getAllValidationResults().forEach(result -> result.getResolvableErrors().forEach(
+        ex.getParameterValidationResults().forEach(result -> result.getResolvableErrors().forEach(
                 error -> errors.putIfAbsent(result.getMethodParameter().getParameterName(),
                         error.getDefaultMessage())));
         return build(HttpStatus.BAD_REQUEST, "Parámetros inválidos", path(request), errors);
