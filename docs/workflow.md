@@ -137,7 +137,7 @@ El workflow tiene tres jobs que corren en `ubuntu-latest`. Configuración común
 Job `build-and-test`:
 
 1. **Checkout del código** (`actions/checkout@v4`): descarga el repositorio en el runner.
-2. **Configurar JDK 17** (`actions/setup-java@v4`): instala Temurin 17 y activa el cache de dependencias Maven para
+2. **Configurar JDK 17** (`actions/setup-java@v5`): instala Temurin 17 y activa el cache de dependencias Maven para
    acelerar las siguientes ejecuciones.
 3. **Pruebas unitarias** (`mvn -B test`): compila y ejecuta solo las pruebas unitarias (surefire).
 4. **Pruebas de integración y verificación de cobertura** (`mvn -B verify -DskipUTs=true`): ejecuta las pruebas
