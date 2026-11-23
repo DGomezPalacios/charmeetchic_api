@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: charmeetchic-kafka-admin
+
+server:
+  port: ${PORT:8082}
+
+logging:
+  level:
+    com.charmeetchic: DEBUG
+    # El AdminClient de Kafka imprime toda su configuración al crearse: se deja solo en WARN.
+    org.apache.kafka: WARN
+
+app:
+  kafka:
+    # Brokers "semilla" del clúster (mismas direcciones que usa la API). Por defecto, los listeners EXTERNAL
+    # del docker-compose.kafka.yml en el host; en Docker: kafka1:9092,kafka2:9092,kafka3:9092.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092,localhost:29092,localhost:39092}
+    # Tiempo máximo que una operación del AdminClient espera respuesta antes de devolver 503.
+    timeout-ms: ${KAFKA_ADMIN_TIMEOUT_MS:15000}
+  admin:
+    # Tópicos de la API de inventario: se pueden describir y ajustar, pero NO borrar (romperían la app).
+    # Los tópicos internos de Kafka (prefijo "__", p. ej. __consumer_offsets) están siempre protegidos de todo.
+    protected-topics: ${ADMIN_PROTECTED_TOPICS:ventas.eventos,inventario.stock,ventas.eventos.DLT,inventario.stock.DLT}
+    # Límites para lo que se puede pedir por la API (el clúster tiene 3 brokers).
+    max-partitions: 50
+    max-replication-factor: 3
+  security:
+    # Project ID de Firebase: de él salen el issuer y la audience exigidos en el token.
+    firebase-project-id: ${FIREBASE_PROJECT_ID:charme-et-chic}
+    # Claves públicas con que Google firma los ID tokens de Firebase (formato JWKS).
+    jwk-set-uri: ${FIREBASE_JWK_SET_URI:https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com}
