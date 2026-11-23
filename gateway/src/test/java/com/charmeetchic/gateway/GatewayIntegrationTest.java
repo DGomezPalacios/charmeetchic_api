@@ -55,11 +55,13 @@ class GatewayIntegrationTest {
 
     private static final MockWebServer backend = startServer("{\"from\":\"backend\"}");
     private static final MockWebServer rabbitAdmin = startServer("{\"from\":\"rabbit-admin\"}");
+    private static final MockWebServer kafkaAdmin = startServer("{\"from\":\"kafka-admin\"}");
 
     @DynamicPropertySource
     static void upstreams(DynamicPropertyRegistry registry) {
         registry.add("BACKEND_URL", () -> "http://localhost:" + backend.getPort());
         registry.add("RABBIT_ADMIN_URL", () -> "http://localhost:" + rabbitAdmin.getPort());
+        registry.add("KAFKA_ADMIN_URL", () -> "http://localhost:" + kafkaAdmin.getPort());
     }
 
     @TestConfiguration
@@ -81,12 +83,14 @@ class GatewayIntegrationTest {
     void drainRecordedRequests() throws InterruptedException {
         while (backend.takeRequest(10, TimeUnit.MILLISECONDS) != null) { /* vaciar */ }
         while (rabbitAdmin.takeRequest(10, TimeUnit.MILLISECONDS) != null) { /* vaciar */ }
+        while (kafkaAdmin.takeRequest(10, TimeUnit.MILLISECONDS) != null) { /* vaciar */ }
     }
 
     @AfterAll
     static void shutdown() throws IOException {
         backend.shutdown();
         rabbitAdmin.shutdown();
+        kafkaAdmin.shutdown();
     }
 
     // ------------------------------------------------------------------ 401 antes de llegar al backend
@@ -152,6 +156,24 @@ class GatewayIntegrationTest {
         assertThat(forwarded.getMethod()).isEqualTo("DELETE");
         assertThat(forwarded.getPath()).isEqualTo("/queues/demo.cola?ifEmpty=true");
         assertThat(backend.takeRequest(100, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
+    void kafkaAdminConTokenValido_vaAKafkaAdminSinElPrefijo() throws Exception {
+        client.get().uri("/kafka-admin/consumer-groups/metricas-ventas").header(HttpHeaders.AUTHORIZATION, bearer(c -> { }))
+                .exchange().expectStatus().isOk()
+                .expectBody().jsonPath("$.from").isEqualTo("kafka-admin");
+
+        RecordedRequest forwarded = kafkaAdmin.takeRequest(1, TimeUnit.SECONDS);
+        assertThat(forwarded).isNotNull();
+        assertThat(forwarded.getPath()).isEqualTo("/consumer-groups/metricas-ventas");
+        assertThat(rabbitAdmin.takeRequest(100, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
+    void kafkaAdminSinToken_es401YNoLlegaAlServicio() throws Exception {
+        client.delete().uri("/kafka-admin/topics/demo").exchange().expectStatus().isUnauthorized();
+        assertThat(kafkaAdmin.takeRequest(200, TimeUnit.MILLISECONDS)).isNull();
     }
 
     @Test

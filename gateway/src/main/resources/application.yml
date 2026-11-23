@@ -10,7 +10,7 @@ spring:
         # respuesta hacen que el navegador la rechace.
         - RemoveRequestHeader=Origin
       httpclient:
-        connect-timeout: 5000      # ms para abrir la conexión con backend/rabbit-admin
+        connect-timeout: 5000      # ms para abrir la conexión con backend/rabbit-admin/kafka-admin
         response-timeout: 30s      # tiempo máximo de respuesta
       routes:
         # /api/** -> API de inventario. Sin StripPrefix: el backend ya tiene context-path /api.
@@ -24,6 +24,14 @@ spring:
           uri: ${RABBIT_ADMIN_URL:http://localhost:8081}
           predicates:
             - Path=/admin/**
+          filters:
+            - StripPrefix=1
+        # /kafka-admin/** -> microservicio kafka-admin (EP5). StripPrefix=1 quita "/kafka-admin":
+        # /kafka-admin/topics -> http://kafka-admin:8082/topics
+        - id: kafka-admin
+          uri: ${KAFKA_ADMIN_URL:http://localhost:8082}
+          predicates:
+            - Path=/kafka-admin/**
           filters:
             - StripPrefix=1
 
