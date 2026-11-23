@@ -5,6 +5,8 @@ import com.charmeetchic.api.enums.MovementType;
 import com.charmeetchic.api.messaging.event.LowStockEvent;
 import com.charmeetchic.api.messaging.event.StockMovementEvent;
 import com.charmeetchic.api.messaging.producer.InventoryEventPublisher;
+import com.charmeetchic.api.streaming.event.StockEvent;
+import com.charmeetchic.api.streaming.producer.StreamingEventPublisher;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -21,7 +23,8 @@ class StockEventServiceTest {
     private static final int THRESHOLD = 5;
 
     private final InventoryEventPublisher publisher = mock(InventoryEventPublisher.class);
-    private final StockEventService service = new StockEventService(publisher, THRESHOLD);
+    private final StreamingEventPublisher streamingPublisher = mock(StreamingEventPublisher.class);
+    private final StockEventService service = new StockEventService(publisher, streamingPublisher, THRESHOLD);
 
     @Test
     void todoCambioDeStockPublicaUnMovimientoQueCuadra() {
@@ -36,13 +39,22 @@ class StockEventServiceTest {
         assertThat(event.isConsistent()).isTrue();
         assertThat(event.reference()).isEqualTo("orden #1");
         assertThat(event.eventId()).isNotBlank();
+
+        // Kafka: el nuevo stock al tópico compactado, con el tipo traducido
+        ArgumentCaptor<StockEvent> stock = ArgumentCaptor.forClass(StockEvent.class);
+        verify(streamingPublisher).publishStock(stock.capture());
+        assertThat(stock.getValue().sku()).isEqualTo("COL-PER-001");
+        assertThat(stock.getValue().stockAnterior()).isEqualTo(23);
+        assertThat(stock.getValue().stockActual()).isEqualTo(20);
+        assertThat(stock.getValue().tipo()).isEqualTo(StockEvent.StockTipo.VENTA);
+        assertThat(stock.getValue().isCambioReal()).isTrue();
     }
 
     @Test
     void sinCambioDeStock_noPublicaNada() {
         service.stockChanged(product(10), 10, MovementType.AJUSTE_MANUAL, "ajuste");
 
-        verifyNoInteractions(publisher);
+        verifyNoInteractions(publisher, streamingPublisher);
     }
 
     @Test

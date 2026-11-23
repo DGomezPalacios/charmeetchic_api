@@ -15,6 +15,8 @@ import com.charmeetchic.api.exception.ValidationException;
 import com.charmeetchic.api.repository.OrderRepository;
 import com.charmeetchic.api.messaging.producer.SalesEventPublisher;
 import com.charmeetchic.api.repository.ProductRepository;
+import com.charmeetchic.api.streaming.event.VentaEvent;
+import com.charmeetchic.api.streaming.producer.StreamingEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,13 +51,16 @@ class OrderServiceTest {
     private StockEventService stockEventService;
     @Mock
     private SalesEventPublisher salesEventPublisher;
+    @Mock
+    private StreamingEventPublisher streamingPublisher;
 
     private OrderService service;
     private Category category;
 
     @BeforeEach
     void setUp() {
-        service = new OrderService(orderRepository, productRepository, stockEventService, salesEventPublisher, new BigDecimal("0.19"));
+        service = new OrderService(orderRepository, productRepository, stockEventService, salesEventPublisher,
+                streamingPublisher, new BigDecimal("0.19"));
         category = Category.builder().id(1L).name("Collares").build();
     }
 
@@ -230,6 +235,9 @@ class OrderServiceTest {
         assertThat(product.getStock()).isEqualTo(10);
         verify(orderRepository).delete(order);
         verify(stockEventService).stockChanged(product, 7, MovementType.CANCELACION_ORDEN, "cancelación orden #1");
+        // Kafka: la cancelación sale con las líneas de la orden para restarlas de las métricas
+        verify(streamingPublisher).publishVenta(argThat(v -> v.tipo() == VentaEvent.VentaTipo.CANCELADA
+                && v.orderId().equals("1") && v.unidades() == 3 && v.origen() == VentaEvent.Origen.REAL));
     }
 
     @Test
@@ -247,6 +255,9 @@ class OrderServiceTest {
         verify(stockEventService).stockChanged(product, 10, MovementType.VENTA, "orden #55");
         verify(salesEventPublisher).publishSale(argThat(sale -> sale.orderId() == 55L && sale.units() == 4
                 && sale.lines() == 1 && sale.userId().equals(USER)));
+        // Kafka complementa a RabbitMQ: el mismo hecho sale a ventas.eventos con key = id de la orden
+        verify(streamingPublisher).publishVenta(argThat(v -> v.tipo() == VentaEvent.VentaTipo.CREADA
+                && v.orderId().equals("55") && v.unidades() == 4 && v.items().get(0).sku() != null));
     }
 
     @Test
@@ -258,6 +269,7 @@ class OrderServiceTest {
 
         verify(stockEventService, never()).stockChanged(any(), anyInt(), any(), any());
         verify(salesEventPublisher, never()).publishSale(any());
+        verify(streamingPublisher, never()).publishVenta(any());
     }
 
     @Test

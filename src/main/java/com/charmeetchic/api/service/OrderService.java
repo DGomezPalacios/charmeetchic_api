@@ -15,6 +15,8 @@ import com.charmeetchic.api.messaging.event.SaleCompletedEvent;
 import com.charmeetchic.api.messaging.producer.SalesEventPublisher;
 import com.charmeetchic.api.repository.OrderRepository;
 import com.charmeetchic.api.repository.ProductRepository;
+import com.charmeetchic.api.streaming.event.VentaEvent;
+import com.charmeetchic.api.streaming.producer.StreamingEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Sort;
@@ -58,17 +60,20 @@ public class OrderService {
     private final ProductRepository productRepository;
     private final StockEventService stockEventService;
     private final SalesEventPublisher salesEventPublisher;
+    private final StreamingEventPublisher streamingPublisher;
     private final BigDecimal taxRate;
 
     public OrderService(OrderRepository orderRepository,
                         ProductRepository productRepository,
                         StockEventService stockEventService,
                         SalesEventPublisher salesEventPublisher,
+                        StreamingEventPublisher streamingPublisher,
                         @Value("${app.order.tax-rate:0.19}") BigDecimal taxRate) {
         this.orderRepository = orderRepository;
         this.productRepository = productRepository;
         this.stockEventService = stockEventService;
         this.salesEventPublisher = salesEventPublisher;
+        this.streamingPublisher = streamingPublisher;
         this.taxRate = taxRate;
     }
 
@@ -131,6 +136,9 @@ public class OrderService {
         salesEventPublisher.publishSale(new SaleCompletedEvent(UUID.randomUUID().toString(), saved.getId(), userId,
                 quantities.size(), quantities.values().stream().mapToInt(Integer::intValue).sum(), saved.getTotal(),
                 Instant.now()));
+        // Y el mismo hecho al log de Kafka (ventas.eventos, key = id de la orden): métricas en tiempo real e
+        // historial. Complementa a RabbitMQ, no lo reemplaza. También sale solo tras el commit.
+        streamingPublisher.publishVenta(toVentaEvent(saved, VentaEvent.VentaTipo.CREADA));
         log.info("Orden creada: id={}, userId={}, líneas={}, total={}", saved.getId(), userId,
                 saved.getItems().size(), saved.getTotal());
         return OrderDTO.from(saved);
@@ -181,6 +189,9 @@ public class OrderService {
             stockEventService.stockChanged(product, previousStock, MovementType.CANCELACION_ORDEN,
                     "cancelación orden #" + id);
         });
+        // Se arma ANTES de borrar la orden (después ya no tendríamos sus líneas). La cancelación resta de las
+        // métricas lo que la creación sumó.
+        streamingPublisher.publishVenta(toVentaEvent(order, VentaEvent.VentaTipo.CANCELADA));
         orderRepository.delete(order);
         log.info("Orden {} cancelada por {}; stock devuelto", id, requesterId);
     }
@@ -201,6 +212,16 @@ public class OrderService {
             throw new AccessDeniedException("La orden pertenece a otro usuario");
         }
         return order;
+    }
+
+    /** Evento de streaming de la orden: sus líneas (sku, nombre, cantidad, precio congelado) y su total. */
+    private static VentaEvent toVentaEvent(Order order, VentaEvent.VentaTipo tipo) {
+        List<VentaEvent.Item> items = order.getItems().stream()
+                .map(i -> new VentaEvent.Item(i.getProduct().getSku(), i.getProduct().getName(), i.getQuantity(),
+                        i.getPrice()))
+                .toList();
+        return new VentaEvent(UUID.randomUUID().toString(), tipo, Instant.now(), String.valueOf(order.getId()),
+                order.getUserId(), items, order.getTotal(), VentaEvent.Origen.REAL);
     }
 
     /** Stock que tenía un producto antes de descontarlo en la orden. */

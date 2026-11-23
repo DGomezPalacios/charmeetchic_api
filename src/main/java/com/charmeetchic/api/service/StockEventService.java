@@ -5,6 +5,8 @@ import com.charmeetchic.api.enums.MovementType;
 import com.charmeetchic.api.messaging.event.LowStockEvent;
 import com.charmeetchic.api.messaging.event.StockMovementEvent;
 import com.charmeetchic.api.messaging.producer.InventoryEventPublisher;
+import com.charmeetchic.api.streaming.event.StockEvent;
+import com.charmeetchic.api.streaming.producer.StreamingEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -18,7 +20,8 @@ import java.util.UUID;
  *
  * <p>Reglas:
  * <ul>
- *   <li>Todo cambio de stock (venta, cancelación, ajuste, stock inicial) genera un movimiento de auditoría.</li>
+ *   <li>Todo cambio de stock (venta, cancelación, ajuste, stock inicial) genera un movimiento de auditoría
+ *       (RabbitMQ) y un evento con el nuevo stock en el tópico compactado {@code inventario.stock} (Kafka).</li>
  *   <li>La alerta de stock bajo se genera SOLO cuando el stock CRUZA el umbral hacia abajo
  *       ({@code antes >= umbral} y {@code después < umbral}). Vender otra unidad de un producto que ya estaba
  *       bajo no repite la alerta.</li>
@@ -32,11 +35,14 @@ import java.util.UUID;
 public class StockEventService {
 
     private final InventoryEventPublisher publisher;
+    private final StreamingEventPublisher streamingPublisher;
     private final int lowStockThreshold;
 
     public StockEventService(InventoryEventPublisher publisher,
+                             StreamingEventPublisher streamingPublisher,
                              @Value("${app.inventory.low-stock-threshold:5}") int lowStockThreshold) {
         this.publisher = publisher;
+        this.streamingPublisher = streamingPublisher;
         this.lowStockThreshold = lowStockThreshold;
     }
 
@@ -55,6 +61,10 @@ public class StockEventService {
         publisher.publishMovement(new StockMovementEvent(UUID.randomUUID().toString(), product.getId(),
                 product.getSku(), product.getName(), type, newStock - previousStock, previousStock, newStock,
                 reference, now));
+        // Además, el nuevo stock al tópico compactado de Kafka (inventario.stock, key = sku): el monitor de stock
+        // mantiene el stock actual de cada producto y detecta quiebres. Complementa a RabbitMQ, no lo reemplaza.
+        streamingPublisher.publishStock(new StockEvent(UUID.randomUUID().toString(), StockEvent.StockTipo.from(type),
+                now, product.getSku(), product.getId(), product.getName(), previousStock, newStock, reference));
 
         if (crossesThreshold(previousStock, newStock)) {
             log.info("Producto id={} sku={} cruzó el umbral de stock bajo ({}): {} -> {}", product.getId(),
