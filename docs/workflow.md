@@ -79,9 +79,18 @@ flowchart TD
     F -->|falla| X
     F -->|ok| G["Job Summary + artefactos<br/>reportes-tests, reporte-cobertura, JAR"]
     G --> H["build-and-test en verde"]
-    H --> D1["Job docker-build<br/>build de la imagen + contenedor healthy"]
-    D1 -->|falla| X
-    D1 -->|ok| H2["Checks en verde"]
+    H --> S1["Job sonarcloud<br/>mvn verify + análisis SonarCloud"]
+    H --> D1["Job docker-build<br/>build de la imagen (imágenes base fijadas)"]
+    S1 --> S2{"¿Quality gate OK?"}
+    S2 -->|no| X
+    S2 -->|sí| H2["Checks en verde"]
+    D1 --> T1["Trivy: SARIF + tabla<br/>CRITICAL y HIGH, ignore-unfixed"]
+    T1 --> D2["Contenedor healthy + /api/health"]
+    D2 -->|falla| X
+    D2 -->|ok| T2{"Trivy: ¿CRITICAL<br/>con corrección?"}
+    T2 -->|sí| X
+    T2 -->|no| H2
+    T1 -.->|"siempre (if: always())"| SA["SARIF a Security → Code scanning"]
     H2 --> I{"¿Checks requeridos OK<br/>y conversaciones resueltas?"}
     I -->|sí| J["Merge permitido"]
     I -->|no| K["Merge bloqueado"]
@@ -91,6 +100,14 @@ flowchart TD
 > El resumen y los reportes (`reportes-tests`, `reporte-cobertura`) se publican siempre (`if: always()`), incluso si
 > el job falló, para poder diagnosticar el error. La política de umbrales está en
 > [CONTRIBUTING.md](../CONTRIBUTING.md#política-de-calidad).
+>
+> `sonarcloud` y `docker-build` corren en paralelo, ambos después de `build-and-test`. Los checks requeridos son
+> `build-and-test` y `docker-build`; `sonarcloud` bloquea el merge solo si se agrega como check requerido en la
+> protección de ramas. Las vulnerabilidades HIGH de Trivy se reportan sin bloquear. Detalle en
+> [Política de seguridad](../CONTRIBUTING.md#política-de-seguridad).
+>
+> Fuera del workflow, **Dependabot** revisa cada semana Maven, Docker y las actions y abre PRs hacia `develop`, y
+> **secret scanning** con *push protection* rechaza pushes que contengan credenciales.
 
 ---
 
@@ -107,7 +124,17 @@ flowchart TD
 
 ## Steps de `.github/workflows/ci.yml`
 
-El workflow tiene dos jobs que corren en `ubuntu-latest`. Job `build-and-test`:
+El workflow tiene tres jobs que corren en `ubuntu-latest`. Configuración común a todos:
+
+- **`permissions: contents: read`** a nivel global: el `GITHUB_TOKEN` solo puede leer el código. Solo
+  `docker-build` pide además `security-events: write`, para subir el SARIF de Trivy.
+- **`concurrency`** por PR (o por rama en los push) con `cancel-in-progress`: un commit nuevo cancela la ejecución
+  anterior, que ya valida un estado obsoleto.
+- **`timeout-minutes: 20`** en cada job, para cortar un job colgado.
+- Las actions de terceros (`docker/*`, `aquasecurity/*`) están fijadas por el SHA completo del commit, con la versión
+  en un comentario; Dependabot las actualiza. Las oficiales de GitHub (`actions/*`, `github/*`) usan tag de versión.
+
+Job `build-and-test`:
 
 1. **Checkout del código** (`actions/checkout@v4`): descarga el repositorio en el runner.
 2. **Configurar JDK 17** (`actions/setup-java@v4`): instala Temurin 17 y activa el cache de dependencias Maven para
@@ -125,5 +152,20 @@ El workflow tiene dos jobs que corren en `ubuntu-latest`. Job `build-and-test`:
 8. **Subir JAR generado** (`actions/upload-artifact@v4`): publica el JAR como artefacto `charmeetchic-api-jar`,
    descargable desde la ejecución en la pestaña *Actions*.
 
-Job `docker-build` (`needs: build-and-test`): construye la imagen con Buildx (sin publicarla), levanta el contenedor,
-espera el estado `healthy` y consulta `/api/health`.
+Job `sonarcloud` (`needs: build-and-test`; no corre en PRs desde forks, que no reciben secrets):
+
+1. **Checkout con `fetch-depth: 0`**: historial completo, que SonarCloud usa para distinguir el código nuevo.
+2. **JDK 17 con cache de Maven** y **cache de `~/.sonar/cache`** (`actions/cache@v4`).
+3. **`mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.qualitygate.wait=true`**: corre
+   las pruebas, genera el XML de JaCoCo y envía el análisis. La versión del plugin, la organización y el proyecto están
+   en el `pom.xml`; el token llega como variable de entorno `SONAR_TOKEN` desde los secrets. El job falla si el
+   *quality gate* falla.
+
+Job `docker-build` (`needs: build-and-test`):
+
+1. **Construir imagen** con Buildx (sin publicarla), con las imágenes base fijadas por versión y digest.
+2. **Trivy: reporte SARIF** (CRITICAL y HIGH, `ignore-unfixed`) y **tabla en el log**; ninguno de los dos falla.
+3. **Verificar contenedor**: lo levanta, espera el estado `healthy` y consulta `/api/health`.
+4. **Trivy: gate**: falla el job si hay alguna vulnerabilidad CRITICAL con corrección disponible.
+5. **Subir SARIF a Code Scanning** (`github/codeql-action/upload-sarif@v4`, `if: always()`): los resultados quedan en
+   *Security → Code scanning* aunque el gate haya fallado.
