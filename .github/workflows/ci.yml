@@ -425,14 +425,15 @@ jobs:
       #  -strict: rechaza campos que no existen en el esquema (p. ej. "readinesProbe" mal escrito), que
       #           kubectl ignoraría en silencio.
       #  -summary: imprime el total de recursos válidos, inválidos y con error.
-      # También se valida el Secret de ejemplo, que no forma parte de ningún overlay.
+      # También se validan el Secret de ejemplo y el pod del smoke test del job deploy, que no forman parte
+      # de ningún overlay.
       - name: Validar manifiestos (kubeconform -strict)
         run: |
           kubeconform -v
           kubeconform -strict -summary -output text \
             -kubernetes-version "$K8S_VERSION" \
             -schema-location default \
-            rendered/dev.yaml rendered/prod.yaml k8s/base/postgres-secret.example.yaml
+            rendered/dev.yaml rendered/prod.yaml k8s/base/postgres-secret.example.yaml k8s/ci/smoke-test-pod.yaml
 
   # Job publish-image: publica la imagen en GitHub Container Registry (ghcr.io) con trazabilidad completa.
   # Solo en push (develop, main o un tag vX.Y.Z), NUNCA en pull_request: un PR no debe publicar artefactos, y un
@@ -558,4 +559,231 @@ jobs:
             echo "Descargar por digest (inmutable): \`docker pull ${IMAGE}@${DIGEST}\`"
             echo
             echo "Verificar la procedencia: \`gh attestation verify oci://${IMAGE}@${DIGEST} --repo ${GITHUB_REPOSITORY}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Job deploy: despliegue automático en un entorno cloud SIMULADO (un clúster kind creado en el runner).
+  # Solo en push a develop (entorno "staging", overlay dev) o a main (entorno "production", overlay prod); no en
+  # PRs ni en tags. Usa GitHub Environments: cada ejecución queda registrada como un deployment del repositorio
+  # (pestaña Deployments) y el entorno puede exigir aprobación manual (Settings -> Environments).
+  # Despliega exactamente la imagen que publicó publish-image (tag sha-<commit>, verificada por digest) y solo
+  # después de que k8s-validate validó los manifiestos.
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [publish-image, k8s-validate]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
+    timeout-minutes: 30
+    # packages: read -> descargar la imagen de ghcr.io (aunque el paquete sea privado).
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      # No hay una URL pública (el clúster vive y muere con el runner): el enlace del deployment lleva a esta
+      # ejecución, cuyo Job Summary muestra qué se desplegó y el resultado del smoke test.
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    env:
+      ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+      OVERLAY: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+      NAMESPACE: charmeetchic
+      IMAGE: ${{ needs.publish-image.outputs.image }}
+      SHA_TAG: ${{ needs.publish-image.outputs.sha-tag }}
+      DIGEST: ${{ needs.publish-image.outputs.digest }}
+      # Herramientas en versiones fijas, verificadas por SHA-256 (mismo criterio que k8s-validate): kind v0.33.0
+      # (la imagen de nodo, Kubernetes 1.35.8, está en k8s/kind-config.yaml) y kubectl de la misma versión.
+      KIND_VERSION: v0.33.0
+      KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+      KUBECTL_VERSION: v1.35.8
+      KUBECTL_SHA256: 874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf
+      KUSTOMIZE_VERSION: v5.8.3
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar kind, kubectl y kustomize (versión fija + checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir -p bin
+          curl -sSfL -o bin/kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          echo "${KIND_SHA256}  bin/kind" | sha256sum -c -
+          curl -sSfL -o bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  bin/kubectl" | sha256sum -c -
+          curl -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
+          tar -xzf kustomize.tar.gz -C bin kustomize
+          chmod +x bin/kind bin/kubectl
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Clúster de 3 nodos (1 control-plane + 2 workers) con la misma configuración que en local. Cada nodo de
+      # kind ve toda la CPU y la memoria del runner (4 vCPU y 16 GB en repositorios públicos), así que los
+      # requests del overlay prod (3 réplicas x 500m/1Gi + PostgreSQL 500m/1Gi) caben sin ajustar los manifiestos.
+      - name: Crear el clúster kind
+        run: |
+          kind create cluster --config k8s/kind-config.yaml --wait 180s
+          kubectl get nodes -o wide
+
+      # Descarga la imagen publicada por su tag inmutable y comprueba que su digest sea el que publicó
+      # publish-image. Luego la carga en los nodos con kind load: los nodos no la descargan de ghcr.io, así que
+      # el despliegue no depende de la visibilidad (pública o privada) del paquete.
+      - name: Login en GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Descargar la imagen y cargarla en kind
+        run: |
+          set -euo pipefail
+          docker pull "${IMAGE}:${SHA_TAG}"
+          if ! docker image inspect --format '{{join .RepoDigests "\n"}}' "${IMAGE}:${SHA_TAG}" | grep -qF "@${DIGEST}"; then
+            echo "::error::El digest de ${IMAGE}:${SHA_TAG} no coincide con el publicado (${DIGEST})"
+            exit 1
+          fi
+          echo "Digest verificado: ${DIGEST}"
+          kind load docker-image "${IMAGE}:${SHA_TAG}" --name charmeetchic
+
+      # Versión de la aplicación (la del pom.xml): la que expone GET /api/health y la de la label
+      # app.kubernetes.io/version. El smoke test comprueba que coincidan.
+      - name: Leer la versión de la aplicación
+        run: |
+          APP_VERSION=$(python3 -c "import xml.etree.ElementTree as ET; ns={'m': 'http://maven.apache.org/POM/4.0.0'}; print(ET.parse('pom.xml').getroot().find('m:version', ns).text)")
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+          echo "Versión de la aplicación: ${APP_VERSION}"
+
+      # Secrets generados en el runner: contraseñas aleatorias que solo existen en este clúster efímero.
+      # ::add-mask:: las oculta si llegaran a aparecer en el log; no se imprimen ni se escriben en disco.
+      - name: Crear el namespace y los Secrets
+        run: |
+          set -euo pipefail
+          kubectl apply -f k8s/base/namespace.yaml
+          PG_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::${PG_PASSWORD}"
+          kubectl -n "$NAMESPACE" create secret generic postgres-credentials \
+            --from-literal=POSTGRES_USER=charmeetchic \
+            --from-literal=POSTGRES_PASSWORD="${PG_PASSWORD}"
+          # El overlay dev (staging) valida los JWT en modo local: necesita su secreto HS256.
+          if [ "$OVERLAY" = "dev" ]; then
+            JWT_SECRET="$(openssl rand -hex 32)"
+            echo "::add-mask::${JWT_SECRET}"
+            kubectl -n "$NAMESPACE" create secret generic charmeetchic-api-jwt-local \
+              --from-literal=JWT_LOCAL_SECRET="${JWT_SECRET}"
+          fi
+
+      # Fija en el overlay (solo en el runner, no se commitea) qué se despliega:
+      #  - la imagen por su tag inmutable sha-<commit>;
+      #  - un patch del Deployment con kubernetes.io/change-cause (columna CHANGE-CAUSE de rollout history),
+      #    las anotaciones del pod (commit completo, digest, ejecución del workflow) y la label de versión.
+      #    Es un patch solo del Deployment de la API: el StatefulSet de PostgreSQL no cambia y no se reinicia.
+      - name: Fijar imagen y trazabilidad con kustomize
+        working-directory: k8s/overlays/${{ env.OVERLAY }}
+        run: |
+          set -euo pipefail
+          kustomize edit set image "charmeetchic-api=${IMAGE}:${SHA_TAG}"
+          {
+            echo "apiVersion: apps/v1"
+            echo "kind: Deployment"
+            echo "metadata:"
+            echo "  name: charmeetchic-api"
+            echo "  labels:"
+            echo "    app.kubernetes.io/version: \"${APP_VERSION}\""
+            echo "  annotations:"
+            echo "    kubernetes.io/change-cause: \"Despliegue ${ENVIRONMENT} del commit ${GITHUB_SHA} (run ${GITHUB_RUN_NUMBER})\""
+            echo "spec:"
+            echo "  template:"
+            echo "    metadata:"
+            echo "      labels:"
+            echo "        app.kubernetes.io/version: \"${APP_VERSION}\""
+            echo "      annotations:"
+            echo "        charmeetchic.cl/git-commit: \"${GITHUB_SHA}\""
+            echo "        charmeetchic.cl/image-digest: \"${DIGEST}\""
+            echo "        charmeetchic.cl/workflow-run: \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\""
+          } > deploy-trace-patch.yaml
+          kustomize edit add patch --path deploy-trace-patch.yaml
+          echo "--- kustomization.yaml (${OVERLAY}) con la imagen y el patch del despliegue:"
+          cat kustomization.yaml
+          kustomize build . > "$RUNNER_TEMP/rendered.yaml"
+          echo "--- Imágenes y trazabilidad en el YAML final:"
+          grep -nE 'image: |change-cause|git-commit|image-digest|app.kubernetes.io/version' "$RUNNER_TEMP/rendered.yaml"
+
+      - name: Aplicar manifiestos (kubectl apply -k)
+        run: kubectl apply -k "k8s/overlays/${OVERLAY}"
+
+      # Timeouts: PostgreSQL inicializa la base (initdb) en el primer arranque; la API espera a PostgreSQL
+      # (initContainer) y Spring Boot tarda en arrancar, con varias réplicas compartiendo la CPU del runner.
+      - name: Esperar el rollout de PostgreSQL y de la API
+        run: |
+          kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=300s
+          kubectl -n "$NAMESPACE" rollout status deployment/charmeetchic-api --timeout=600s
+          kubectl -n "$NAMESPACE" get pods -o wide
+
+      # Pod con curl DENTRO del clúster contra el Service (ver k8s/ci/smoke-test-pod.yaml).
+      - name: Smoke test desde dentro del clúster
+        run: |
+          set -uo pipefail
+          sed "s/__EXPECTED_VERSION__/${APP_VERSION}/" k8s/ci/smoke-test-pod.yaml | kubectl apply -f -
+          phase=""
+          for _ in $(seq 1 60); do
+            phase=$(kubectl -n "$NAMESPACE" get pod smoke-test -o jsonpath='{.status.phase}')
+            if [ "$phase" = "Succeeded" ] || [ "$phase" = "Failed" ]; then break; fi
+            sleep 3
+          done
+          kubectl -n "$NAMESPACE" logs smoke-test | tee "$RUNNER_TEMP/smoke-test.log"
+          echo "Estado del pod smoke-test: ${phase:-desconocido}"
+          [ "$phase" = "Succeeded" ]
+
+      # Diagnóstico si cualquier paso anterior falló: estado de los pods, describe, eventos y logs de la API.
+      - name: Diagnóstico del despliegue (solo si falló)
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp || true
+          kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/name=charmeetchic-api -c wait-for-postgres --tail=50 --prefix || true
+          kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/name=charmeetchic-api -c api --tail=200 --prefix || true
+          kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/name=charmeetchic-api -c api --previous --tail=100 --prefix || true
+
+      - name: Publicar resumen del despliegue
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Despliegue en ${ENVIRONMENT} (${JOB_STATUS})"
+            echo
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Entorno | \`${ENVIRONMENT}\` (overlay \`k8s/overlays/${OVERLAY}\`, clúster kind efímero en el runner) |"
+            echo "| Commit | [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) |"
+            echo "| Imagen | \`${IMAGE}:${SHA_TAG}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Versión de la aplicación | \`${APP_VERSION:-?}\` |"
+            echo
+            echo "### Pods"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" get pods -o wide 2>&1 || true
+            echo '```'
+            echo
+            echo "### Trazabilidad de los pods de la API"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/name=charmeetchic-api \
+              -o custom-columns='POD:.metadata.name,NODO:.spec.nodeName,VERSION:.metadata.labels.app\.kubernetes\.io/version,COMMIT:.metadata.annotations.charmeetchic\.cl/git-commit' 2>&1 || true
+            echo '```'
+            echo
+            echo "### kubectl rollout history"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" rollout history deployment/charmeetchic-api 2>&1 || true
+            echo '```'
+            echo
+            echo "### Smoke test"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/smoke-test.log" 2>/dev/null || echo "El smoke test no llegó a ejecutarse."
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
