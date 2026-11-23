@@ -29,6 +29,53 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Job gitflow-guard: hace cumplir GitFlow en los PRs hacia main. Solo pueden llegar a main una release (rama
+  # develop) o una corrección urgente (hotfix/*). Cualquier otra rama (feature/*, docs/*, fix/*...) debe ir a develop.
+  # Motivo: los PRs #16 (fix/skip-tests-docker) y #27 (feature/k8s) se fusionaron por error en main, que es la rama
+  # por defecto del repositorio y la que GitHub propone como base al abrir un PR (ver CONTRIBUTING.md).
+  # Es check requerido solo en main; en los PRs hacia develop el job no corre.
+  gitflow-guard:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    # Solo compara el nombre de una rama: no necesita checkout ni ningún permiso del GITHUB_TOKEN.
+    permissions: {}
+    timeout-minutes: 2
+
+    steps:
+      # github.head_ref es el nombre de la rama de origen del PR, que elige quien abre el PR. Se pasa por variable
+      # de entorno y no interpolado en el script, para que un nombre de rama con caracteres de shell no se ejecute.
+      - name: Verificar la rama de origen del PR (develop o hotfix/*)
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            develop|hotfix/*)
+              echo "GitFlow OK: '${HEAD_REF}' puede mergearse en main."
+              ;;
+            *)
+              echo "::error title=GitFlow: base incorrecta::La rama '${HEAD_REF}' no puede mergearse en main. A main solo llegan develop (release) y hotfix/* (corrección urgente). Cambia la base del PR a develop: botón 'Edit' junto al título del PR -> base: develop."
+              {
+                echo "## ❌ GitFlow: este PR no puede ir a main"
+                echo
+                echo "La rama de origen es \`${HEAD_REF}\`. A \`main\` (producción) solo llegan:"
+                echo
+                echo "- \`develop\`: una release (PR \`develop → main\`)."
+                echo "- \`hotfix/*\`: una corrección urgente sobre producción."
+                echo
+                echo "**Cómo corregirlo:** cambia la base del PR a \`develop\` (botón *Edit* junto al título del PR"
+                echo "→ *base: develop*), o desde la terminal:"
+                echo
+                echo '```bash'
+                echo "gh pr edit <número-del-PR> --base develop"
+                echo '```'
+                echo
+                echo "No hace falta cerrar el PR ni rehacer los commits. Si es una corrección urgente de producción,"
+                echo "la rama debe llamarse \`hotfix/<descripción>\` y salir de \`main\`. Ver CONTRIBUTING.md, *Flujo de merge*."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+
   # Primer job: compila el proyecto, corre los tests y valida que el
   # artefacto generado levante correctamente (smoke test)
   build-and-test:

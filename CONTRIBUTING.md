@@ -165,6 +165,31 @@ lo que se corrige (`fix(...)` para código, `docs(...)` para documentación, etc
 4. Hacer **back-merge** de `main` a `develop` (PR `main → develop`) para que la corrección no se pierda en la
    siguiente release. Ese merge despliega en **staging**.
 
+### Control automático: `gitflow-guard`
+
+`main` es la rama por defecto del repositorio, así que GitHub la propone como base al abrir cualquier PR. Para que un
+descuido no lleve trabajo sin integrar directo a producción, el job **`gitflow-guard`** del
+[CI](.github/workflows/ci.yml) corre en cada PR hacia `main` y **falla si la rama de origen no es `develop` ni
+empieza con `hotfix/`**:
+
+| Rama de origen | PR hacia `main` | PR hacia `develop` |
+|---|---|---|
+| `develop` | ✅ permitido (release) | — |
+| `hotfix/*` | ✅ permitido (corrección urgente) | ✅ (back-merge) |
+| `feature/*`, `docs/*`, `fix/*` u otra | ❌ `gitflow-guard` en rojo | ✅ permitido |
+
+Si falla, el log y el *Job Summary* explican el motivo. La corrección es **cambiar la base del PR a `develop`**
+(botón *Edit* junto al título del PR → *base: develop*, o `gh pr edit <número> --base develop`); no hace falta cerrar
+el PR ni rehacer los commits. El job no necesita permisos del `GITHUB_TOKEN` (`permissions: {}`), no hace checkout y
+tiene un timeout de 2 minutos. El nombre de la rama se lee desde una variable de entorno, no interpolado en el
+script, para que un nombre de rama con caracteres de shell no se ejecute.
+
+**Incidente que lo motivó:** los PRs **#16** (`fix/skip-tests-docker`) y **#27** (`feature/k8s`) se fusionaron por
+error en `main` en vez de `develop`, porque se abrieron con la base por defecto. `main` quedó con cambios que nunca
+pasaron por `develop` (rama que se quedó atrás, sin `k8s/` ni el job `k8s-validate`), y hubo que crear
+`feature/deploy` desde `main` y planificar un back-merge `main → develop` para volver a alinear las ramas. Con
+`gitflow-guard` como check requerido en `main`, ninguno de los dos PRs se habría podido mergear.
+
 ### Versionado semántico
 
 Las versiones siguen [SemVer](https://semver.org/lang/es/) con el formato `MAJOR.MINOR.PATCH`:
@@ -200,6 +225,10 @@ Reglas aplicadas a `main` y `develop` (protección de ramas en GitHub):
 - **Check requerido `build-and-test`**: el job del workflow [CI](.github/workflows/ci.yml) debe terminar en verde
   para poder mergear. `publish-image` y `deploy` **no** son checks requeridos: no corren en los PRs (solo después
   del merge, en el push a `develop` o `main`), así que exigirlos bloquearía todos los merges.
+- **Check requerido `gitflow-guard` solo en `main`**: bloquea los PRs hacia `main` que no vienen de `develop` ni de
+  `hotfix/*` (ver [Control automático](#control-automático-gitflow-guard)). Se configura como requerido únicamente
+  en la protección de `main`: en los PRs hacia `develop` el job no corre (cualquier rama de trabajo puede ir a
+  `develop`), y si fuera requerido allí GitHub esperaría un check que nunca aparece.
 - **Revisión con comentarios en línea** sobre el diff del PR (pestaña *Files changed*).
 - **Conversaciones resueltas** antes del merge: cada comentario de review se atiende con un commit o una respuesta y
   se marca como resuelto.
