@@ -861,3 +861,17 @@ En el desarrollo de este proyecto se utilizaron herramientas de inteligencia art
 - Anthropic. (2026). *Claude* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://claude.ai
 - Anthropic. (2026). *Claude Code* (versión consultada en noviembre de 2026) [Herramienta de asistencia de programación con IA]. https://claude.com/claude-code
 - Google. (2026). *Gemini* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://gemini.google.com
+
+---
+
+## Conclusiones (Evaluación 2)
+
+<!-- A completar por la autora -->
+
+## Reflexión personal (Evaluación 2)
+
+<!-- A completar por la autora -->
+
+## Declaración de uso de IA (Evaluación 2)
+
+<!-- A completar por la autora -->
