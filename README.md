@@ -10,6 +10,7 @@ crecer hacia un ecommerce (carrito, checkout, pagos).
 - **Stack:** Java 17 · Spring Boot 3.5 · Spring Security · Spring Data JPA · JWT · Maven
 - **Mensajería:** RabbitMQ (clúster de 2 nodos, ACK manual, DLQ, RPC y fanout) · microservicio `rabbit-admin/` ·
   API Gateway (`gateway/`)
+- **Streaming:** Apache Kafka (3 Zookeeper + 3 brokers, RF 3, DLT) · microservicio `kafka-admin/` · Kafka UI
 - **Base de datos:** H2 en memoria (desarrollo y tests) · PostgreSQL (perfil `prod` en Azure/Codespaces y `k8s` en Kubernetes)
 - **Contenedores y despliegue:** Docker (imagen multi-etapa publicada en GHCR) · docker-compose de producción ·
   Kubernetes con Kustomize · kind
@@ -547,14 +548,159 @@ muestra `ALERTA STOCK BAJO`. Una segunda compra del mismo producto solo genera e
 
 ---
 
+## Streaming con Kafka (EP5)
+
+Kafka **complementa** a RabbitMQ, no lo reemplaza. Cada venta y cada cambio de stock sigue saliendo a RabbitMQ
+(tareas: auditoría, alertas de reposición, reportes) **y además** queda en un log de Kafka que varios consumer groups
+leen de forma independiente y que se puede releer (métricas en tiempo real, historial, monitor de stock).
+
+| | RabbitMQ (EP3/EP4) | Kafka (EP5) |
+|---|---|---|
+| Modelo | Cola de **tareas**: cada mensaje lo procesa un consumidor y se borra al confirmarlo | **Log** de eventos: el mensaje queda (retención) y cada grupo lleva su propio offset |
+| Uso aquí | Auditoría, alerta de stock bajo, reportes, RPC de stock | Métricas en vivo, historial, stock actual por SKU |
+| Pausar un consumidor | Los mensajes se acumulan en la cola | El consumidor sigue en el grupo y su **lag** crece |
+
+### Arquitectura: 3 Zookeeper + 3 brokers
+
+`docker-compose.kafka.yml` (separado del compose de RabbitMQ) levanta un **ensemble de 3 Zookeeper** y **3 brokers**
+Confluent 7.9.1 (Kafka 3.9, la última línea con soporte de Zookeeper), más **Kafka UI** (provectuslabs v0.7.2).
+
+```
+  zookeeper1 ─ zookeeper2 ─ zookeeper3        quórum 2 de 3: tolera la caída de 1 nodo
+        │            │            │
+     kafka1 ◄────► kafka2 ◄────► kafka3        RF 3, min.insync.replicas 2, sin unclean leader election
+        ▲  (red interna kafkaN:9092)    ▲
+  backend · kafka-admin · kafka-ui      host: 127.0.0.1:19092 / 29092 / 39092
+```
+
+- **Durabilidad**: `default.replication.factor=3`, `min.insync.replicas=2` y productores con `acks=all` +
+  `enable.idempotence=true`: un mensaje confirmado está en al menos 2 brokers y los reintentos del productor no
+  generan duplicados. Si quedara 1 sola réplica viva, Kafka rechaza la escritura en vez de arriesgar perderla.
+- **Sin autocreación de tópicos**: los declara la API (beans `NewTopic`) o kafka-admin.
+- **Healthchecks**: Zookeeper sano = forma parte del quórum (`srvr` → `Mode: leader|follower`); broker sano =
+  responde al protocolo (`kafka-broker-api-versions`). Los brokers esperan a los 3 Zookeeper.
+- **Memoria**: 3×256 MiB (ZK) + 3×768 MiB (brokers) + 384 MiB (UI) ≈ 3,4 GiB; con RabbitMQ, la API y los admin
+  ≈ 7 GiB de los 16 GB del Codespace.
+
+### Tópicos (centralizados en `application.yml` → `KafkaTopicConfig`)
+
+| Tópico | Key | Part. | RF | cleanup | Retención | Para qué |
+|---|---|---|---|---|---|---|
+| `ventas.eventos` | `orderId` | 3 | 3 | `delete` | 7 días | Orden **creada / cancelada** (`VentaEvent`) |
+| `inventario.stock` | `sku` | 3 | 3 | `compact` | último valor por SKU | Cada cambio de stock (`StockEvent`): venta, cancelación, ajuste, ingreso, sincronización |
+| `ventas.eventos.DLT` / `inventario.stock.DLT` | igual | 3 | 3 | `delete` | 14 días | Mensajes que un consumidor no pudo procesar |
+
+- **3 particiones**: hasta 3 consumidores de un grupo en paralelo (y cada broker lidera una partición).
+- **Key `orderId` / `sku`**: todos los eventos de una orden o de un producto caen en la misma partición → en orden.
+- **`compact` en stock**: solo importa el último stock de cada producto; el tópico es una "tabla" que un consumidor
+  nuevo relee desde el inicio para reconstruir el estado (`min.compaction.lag.ms=60000`, `segment.ms=600000`,
+  `min.cleanable.dirty.ratio=0.1`). Al arrancar, la API publica una **foto** del stock (tipo `SINCRONIZACION`)
+  para que el tópico vuelva a coincidir con la BD aunque se hayan perdido eventos con Kafka caído.
+- **DLT con ≥ particiones que el original**: el mensaje fallido se publica en la misma partición de la que vino.
+
+### Productores
+
+`StreamingEventPublisher` es lo único que usa el negocio (`OrderService`, `StockEventService`). Valida el evento
+(Bean Validation), elige tópico y key, y lo envía **después del commit** (`AfterCommitKafkaSender`, igual que con
+RabbitMQ): una orden con rollback no publica nada. La configuración vive aislada en `streaming/config`
+(`KafkaProducerConfig`: `acks=all`, idempotencia, `JsonSerializer` sin headers de tipo, `max.block.ms=3000` para no
+colgar la petición HTTP si Kafka no responde).
+
+### Consumer groups
+
+| Grupo | Tópico | Consumidores | Qué hace |
+|---|---|---|---|
+| `metricas-ventas` | `ventas.eventos` | **3** (uno por partición) | Ventas del último minuto (por hora del evento), totales, ingresos y top 5 productos; descarta duplicados por `eventId` |
+| `historial-ventas` | `ventas.eventos` | 1 (recibe las 3 particiones) | Historial y conteo por partición: **otro grupo, mismos mensajes, offsets propios** |
+| `monitor-stock` | `inventario.stock` | 1 | Stock actual por SKU; detecta **quiebre** (0), **stock crítico** (< umbral) y recuperación. Relee el tópico compactado desde el inicio al arrancar |
+| `monitor-dlt` | `*.DLT` | 1 | Muestra en el log y en el dashboard cada mensaje apartado, con grupo y motivo |
+
+Los `@KafkaListener` (paquete `streaming/consumer`) solo validan y delegan; la lógica está en `service`
+(`VentasMetricasService`, `StockMonitorService`, `HistorialVentasService`).
+
+### Manejo de errores
+
+1. **JSON inválido** → `ErrorHandlingDeserializer`: no tumba al consumidor ni lo deja en bucle; va al `.DLT` con los
+   bytes originales, **sin reintentos**.
+2. **Evento que no pasa la validación** (`InvalidStreamingEventException`) → no recuperable: `.DLT` directo.
+3. **Error transitorio** → `DefaultErrorHandler` con **2 reintentos** y backoff fijo de 1 s; si siguen fallando, `.DLT`.
+
+`DeadLetterPublishingRecoverer` agrega los headers `kafka_dlt-*` (tópico, partición, offset y grupo originales) y
+`x-dlt-motivo` con la causa real. Cada intento fallido y cada envío al DLT queda en el log con **tópico, partición,
+offset, key y motivo**. Un mensaje defectuoso en `ventas.eventos` aparece **dos veces** en el DLT (una por cada grupo
+de ventas): cada grupo decide de forma independiente.
+
+### Endpoints (`/api/streaming/**`, solo ADMIN)
+
+| Método | Ruta | |
+|---|---|---|
+| GET | `/streaming/metrics` | Contrato del dashboard: `generadoEn`, `ventasUltimoMinuto`, `ventasTotales`, `ingresosTotales`, `topProductos[]`, `stockCritico[]`, `ultimosEventos[]` |
+| GET | `/streaming/historial` | Lo que vio `historial-ventas`, por partición |
+| POST | `/streaming/simulate?ventas=N` | N ventas sintéticas válidas (máx. 1000), solo en Kafka (no tocan BD ni stock) → 202 |
+| POST | `/streaming/simulate?ventas=0&defectuoso=true&tipoDefecto=VALIDACION\|JSON\|TRANSITORIO` | Un evento defectuoso para la demo del DLT |
+| GET | `/streaming/consumers` | Listeners, grupo, estado y particiones asignadas a cada consumidor |
+| POST | `/streaming/consumers/{id}/pause` · `/resume` | Demo de lag (el consumidor sigue en el grupo) |
+| POST | `/streaming/consumers/{id}/stop` · `/start` | Sale del grupo (necesario para resetear offsets) |
+
+### Microservicio `kafka-admin/`
+
+App Spring Boot separada (puerto 8082, ruta del gateway `/kafka-admin/**`), igual que `rabbit-admin`: JWT de Firebase
++ rol ADMIN, `KafkaAdminService` encapsula el `AdminClient`, controladores con DTOs validados. Tópicos (crear,
+listar, describir con líderes/ISR, modificar configs, aumentar particiones, borrar con los del sistema protegidos)
+y consumer groups (listar, describir con **lag por partición**, resetear offsets con el grupo detenido). Detalle en
+[`kafka-admin/README.md`](kafka-admin/README.md).
+
+### Cómo probar
+
+**En el PC (solo Kafka + API con `mvn`)**
+
+```bash
+docker compose -f docker-compose.kafka.yml up -d          # 3 ZK + 3 brokers + Kafka UI en http://localhost:8085
+mvn spring-boot:run                                        # se conecta a localhost:19092,29092,39092
+```
+
+**Todo junto (RabbitMQ + Kafka + gateway + admins), igual que en el Codespace**
+
+```bash
+./deploy/codespaces-up.sh
+```
+
+Luego, en Postman, la carpeta **"10. Kafka"** de `postman/charmeetchic-demo.postman_collection.json` recorre la demo
+en orden: métricas → compra real → simular 200 ventas → pausar `metricas-ventas` + simular 300 → ver el lag en
+kafka-admin → reanudar (lag 0) → eventos defectuosos y DLT → segundo grupo → kafka-admin (crear, modificar, aumentar
+particiones, borrar, 403 en tópico del sistema) → reset de offsets (409 con el grupo activo, `stop`, reset, `start`).
+
+Comprobaciones por consola:
+
+```bash
+C="docker compose -f docker-compose.prod.yml -f docker-compose.kafka.yml -f docker-compose.codespaces.yml"
+$C exec kafka1 kafka-topics --bootstrap-server localhost:9092 --describe --topic ventas.eventos
+$C exec kafka1 kafka-consumer-groups --bootstrap-server localhost:9092 --describe --group metricas-ventas
+```
+
+**Tests**: `StreamingKafkaIntegrationTest` levanta un broker **embebido** (sin Docker) y prueba de punta a punta la
+venta real, los 4 grupos, el DLT con sus 3 tipos de error y la pausa/reanudación. `mvn verify` no necesita Kafka.
+
+### Variables de entorno
+
+| Variable | Por defecto | |
+|---|---|---|
+| `STREAMING_ENABLED` | `true` (prod compose: `false`) | Interruptor de Kafka en la API |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:19092,localhost:29092,localhost:39092` | En Docker: `kafka1:9092,kafka2:9092,kafka3:9092` |
+| `KAFKA_RETRY_BACKOFF_MS` | `1000` | Espera entre reintentos del consumidor |
+| `STREAMING_SIMULATED_FAILURES` | `true` | Permite `tipoDefecto=TRANSITORIO` |
+| `KAFKA_UI_PORT` | `8085` | Puerto local de Kafka UI |
+
 ## Producción (Azure)
 
-El repo tiene tres apps Spring Boot independientes y un compose que las levanta en una sola VM:
+El repo tiene cuatro apps Spring Boot independientes y un compose que las levanta en una sola VM (kafka-admin solo
+en Codespaces, junto al clúster de Kafka):
 
 | Carpeta | App | Puerto interno |
 |---|---|---|
 | `/` | API de inventario (este README) | 8080 |
 | [`rabbit-admin/`](rabbit-admin/README.md) | Administrador de RabbitMQ | 8081 |
+| [`kafka-admin/`](kafka-admin/README.md) | Administrador de Kafka (EP5) | 8082 |
 | [`gateway/`](gateway/README.md) | API Gateway (valida JWT, CORS, rutas) | 8000 |
 
 `docker-compose.prod.yml` agrega RabbitMQ en clúster de 2 nodos, PostgreSQL y Caddy (HTTPS con Let's Encrypt).
@@ -637,6 +783,12 @@ charmeetchic_api/
 │   ├── dependabot.yml            Actualizaciones automáticas (Maven, Actions, Docker, npm)
 │   └── pull_request_template.md
 ├── docs/                         workflow.md (GitFlow y pipeline) · kubernetes.md (orquestación)
+├── deploy/                       Scripts de VM Azure y Codespaces (codespaces-up.sh), Caddy, config de RabbitMQ
+├── gateway/ · rabbit-admin/ · kafka-admin/   Apps Spring Boot separadas (cada una con pom, Dockerfile y tests)
+├── docker-compose.prod.yml       RabbitMQ 2 nodos + PostgreSQL + API + admins + gateway + Caddy
+├── docker-compose.kafka.yml      Kafka: 3 Zookeeper + 3 brokers + Kafka UI (EP5)
+├── docker-compose.codespaces.yml Override de Codespaces (sin Caddy, con Kafka y kafka-admin)
+├── postman/                      Colección de la demo (carpeta "10. Kafka")
 ├── k8s/
 │   ├── base/                     Deployment, Service, HPA, PDB, StatefulSet PostgreSQL, NetworkPolicy...
 │   ├── overlays/dev · prod/      Ajustes por entorno (Kustomize)
