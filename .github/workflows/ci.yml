@@ -159,7 +159,51 @@ jobs:
           name: charmeetchic-api-jar
           path: target/charmeetchic-api-0.0.1-SNAPSHOT.jar
 
-  # Segundo job: construye la imagen Docker y verifica que el contenedor arranque sano.
+  # Análisis estático de código y cobertura en SonarCloud (bugs, vulnerabilidades, code smells,
+  # duplicación). Corre en paralelo con docker-build, después de que build-and-test esté en verde.
+  # El job falla si el quality gate de SonarCloud falla (-Dsonar.qualitygate.wait=true).
+  sonarcloud:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 20
+    # Los PRs desde forks no reciben secrets: el análisis no podría autenticarse. Los PRs de Dependabot
+    # sí lo tienen, porque SONAR_TOKEN también está cargado como secret de Dependabot.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      # Historial completo: SonarCloud usa git blame para atribuir cada problema a su commit y
+      # distinguir el "código nuevo" del existente.
+      - name: Checkout del código (historial completo)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # Cache de los plugins de análisis que descarga el scanner (~/.sonar/cache)
+      - name: Cache de SonarCloud
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      # verify genera el XML de JaCoCo (unitarias + integración) que lee SonarCloud; el plugin toma la
+      # versión fijada en el pluginManagement del pom.xml y la organización/proyecto de sus propiedades.
+      # El token llega solo como variable de entorno: nunca aparece en el comando ni en el log.
+      - name: Análisis de SonarCloud (mvn verify + sonar)
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: >
+          mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.qualitygate.wait=true
+
+  # Job docker-build: construye la imagen Docker y verifica que el contenedor arranque sano.
   # Solo corre si build-and-test terminó en verde. La imagen NO se publica en ningún registro.
   docker-build:
     runs-on: ubuntu-latest

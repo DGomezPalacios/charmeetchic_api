@@ -28,6 +28,23 @@
         <cobertura.ramas.min>0.82</cobertura.ramas.min>
         <cobertura.service.lineas.min>0.95</cobertura.service.lineas.min>
         <cobertura.service.ramas.min>0.85</cobertura.service.ramas.min>
+
+        <!-- SonarCloud (job "sonarcloud" del CI). Solo identificadores públicos: el token se pasa como
+             variable de entorno SONAR_TOKEN desde los secrets de GitHub y nunca se escribe aquí. -->
+        <sonar.organization>dgomezpalacios</sonar.organization>
+        <sonar.projectKey>DGomezPalacios_charmeetchic_api</sonar.projectKey>
+        <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+        <!-- Reporte XML de JaCoCo (unitarias + integración) que genera `mvn verify`. -->
+        <sonar.coverage.jacoco.xmlReportPaths>${project.build.directory}/site/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
+        <!-- Mismas exclusiones de cobertura que JaCoCo (main, DTOs y entidades), para que el % de
+             SonarCloud coincida con el del pipeline. El código se sigue analizando (bugs, code smells). -->
+        <sonar.coverage.exclusions>
+            **/CharmeetchicApiApplication.java,
+            **/dto/**,
+            **/entity/**
+        </sonar.coverage.exclusions>
+        <!-- Versión fija del scanner; al estar en el pom, Dependabot (maven) la mantiene al día. -->
+        <sonar-maven-plugin.version>5.9.0.7382</sonar-maven-plugin.version>
     </properties>
 
     <dependencies>
@@ -104,6 +121,17 @@
     </dependencies>
 
     <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Scanner de SonarCloud: no se ejecuta en el build normal; el CI lo invoca con
+                     `mvn ... org.sonarsource.scanner.maven:sonar-maven-plugin:sonar` y toma esta versión. -->
+                <plugin>
+                    <groupId>org.sonarsource.scanner.maven</groupId>
+                    <artifactId>sonar-maven-plugin</artifactId>
+                    <version>${sonar-maven-plugin.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
         <plugins>
             <!-- Procesador de Lombok explícito: javac (JDK 23+) ya no descubre procesadores implícitamente -->
             <plugin>
