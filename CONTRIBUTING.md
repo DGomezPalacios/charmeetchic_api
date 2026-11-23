@@ -318,8 +318,12 @@ frenar todo el flujo por cada aviso nuevo.
 3. **Verificar** que el check vuelva a verde y que la alerta se cierre sola en la pestaña Security al llegar a la rama
    analizada.
 4. **Si no se puede corregir todavía** (no hay versión corregida o la actualización requiere una migración mayor):
-   descartar la alerta en GitHub o SonarCloud **con una justificación escrita** (por ejemplo, "código no alcanzable:
-   la API no usa XsltView") y abrir un issue para retomarla. Nunca se ocultan hallazgos sin justificar.
+   documentar el riesgo aceptado **con una justificación escrita** y abrir un issue para retomarla. En Trivy se agrega
+   a `.trivyignore` con un comentario (qué es, por qué no aplica, por qué no se corrige ahora y cuándo se revisa) y
+   una fecha de vencimiento `exp:AAAA-MM-DD`: al vencer, la vulnerabilidad vuelve a bloquear. Ejemplo actual:
+   CVE-2026-47884 (`XsltView` de spring-webmvc, solo corregida en Spring Framework 7 / Spring Boot 4; la API no usa
+   vistas XSLT). En GitHub o SonarCloud, la alerta se descarta con el mismo tipo de justificación. Nunca se ocultan
+   hallazgos sin justificar.
 5. **Secreto expuesto**: revocar y rotar la credencial de inmediato (borrarla del historial no basta: hay que asumir
    que ya fue copiada), actualizar el secret en GitHub y cerrar la alerta.
 
@@ -355,9 +359,10 @@ charmeetchic_api/
 │   │       └── data.sql          Datos iniciales del catálogo
 │   └── test/
 │       └── java/com/charmeetchic/api/   Unitarias *Test (Mockito, surefire) e integración *IntegrationTest (MockMvc + H2, failsafe)
+├── .trivyignore                      Riesgos aceptados de Trivy, con justificación y vencimiento
 ├── CONTRIBUTING.md
 ├── README.md
-└── pom.xml                           Dependencias, build, separación de pruebas y cobertura (JaCoCo)
+└── pom.xml                           Spring Boot 3.5 (parent), dependencias, pruebas, cobertura y SonarCloud
 ```
 
 > El modelo de dominio vive en el paquete `entity` (no `model`), y el paquete de enumeraciones se llama `enums`

@@ -163,9 +163,11 @@ Job `sonarcloud` (`needs: build-and-test`; no corre en PRs desde forks, que no r
 
 Job `docker-build` (`needs: build-and-test`):
 
-1. **Construir imagen** con Buildx (sin publicarla), con las imágenes base fijadas por versión y digest.
+1. **Construir imagen** con Buildx (sin publicarla), con las imágenes base fijadas por versión y digest. La app
+   (Spring Boot 3.5) se extrae en capas con `jarmode=tools` y arranca con `JarLauncher`.
 2. **Trivy: reporte SARIF** (CRITICAL y HIGH, `ignore-unfixed`) y **tabla en el log**; ninguno de los dos falla.
 3. **Verificar contenedor**: lo levanta, espera el estado `healthy` y consulta `/api/health`.
-4. **Trivy: gate**: falla el job si hay alguna vulnerabilidad CRITICAL con corrección disponible.
+4. **Trivy: gate**: falla el job si hay alguna vulnerabilidad CRITICAL con corrección disponible. Los tres pasos de
+   Trivy leen `.trivyignore` (`trivyignores`), donde se documentan los riesgos aceptados con fecha de vencimiento.
 5. **Subir SARIF a Code Scanning** (`github/codeql-action/upload-sarif@v4`, `if: always()`): los resultados quedan en
    *Security → Code scanning* aunque el gate haya fallado.
