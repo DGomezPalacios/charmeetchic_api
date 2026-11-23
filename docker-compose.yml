@@ -1,0 +1,34 @@
+# -----------------------------------------------------------------------------
+# RabbitMQ de DESARROLLO LOCAL: un solo nodo con la consola de administración.
+# (El clúster de 2 nodos para la nube va en otro archivo, en la Fase D.)
+#
+#   Levantar:   docker compose up -d
+#   Consola:    http://localhost:15672   (usuario/clave: guest/guest)
+#   Detener:    docker compose down        (agrega -v para borrar colas y mensajes)
+#
+# No hace falta crear colas ni exchanges a mano: la API los declara sola al conectarse
+# (RabbitMQConfig + RabbitAdmin).
+# -----------------------------------------------------------------------------
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    container_name: charmeetchic-rabbitmq
+    hostname: rabbitmq-local          # el nombre del nodo depende del hostname: fijo = datos persistentes
+    ports:
+      - "5672:5672"                   # AMQP (lo usa la API)
+      - "15672:15672"                 # consola web de administración
+    environment:
+      # Credenciales SOLO para desarrollo local; coinciden con los valores por defecto de application.yml.
+      # En la nube se definen en un archivo .env que NO se versiona.
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq-data:

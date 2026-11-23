@@ -1,0 +1,22 @@
+# =============================================================================
+# Override para GitHub Codespaces (se usa JUNTO con docker-compose.prod.yml):
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.codespaces.yml up -d --build
+#   (o simplemente: ./deploy/codespaces-up.sh)
+#
+# Diferencias con la VM:
+#   - Sin Caddy: el HTTPS lo pone Codespaces (https://<codespace>-8000.app.github.dev).
+#     El servicio queda en un "profile" que no se activa, así que no se levanta.
+#   - El gateway publica su puerto 8000 directamente; Codespaces lo reenvía por HTTPS.
+#   - CORS: FRONTEND_ORIGIN (Firebase Hosting, ambos dominios) + http://localhost:4200, igual que en prod.
+# Todo lo demás (clúster de 2 nodos, postgres, backend, rabbit-admin, límites de memoria) es idéntico.
+# =============================================================================
+services:
+  caddy:
+    profiles: ["caddy"]   # desactivado en Codespaces
+
+  gateway:
+    ports:
+      - "8000:8000"
+    environment:
+      CORS_ALLOWED_ORIGINS: ${FRONTEND_ORIGIN:?Falta FRONTEND_ORIGIN en .env},http://localhost:4200
