@@ -1,0 +1,21 @@
+# Ajustes de la API para producción: más réplicas iniciales y más recursos por réplica.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: charmeetchic-api
+spec:
+  # Igual al minReplicas del HPA de prod.
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: api
+          resources:
+            requests:
+              # Medio núcleo garantizado por réplica: atiende más tráfico antes de que el HPA escale.
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              # MaxRAMPercentage=70 -> heap ~717Mi.
+              memory: 1Gi

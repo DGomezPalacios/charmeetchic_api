@@ -1,0 +1,54 @@
+# -----------------------------------------------------------------------------
+# Base de Kustomize: los recursos comunes a todos los entornos. No se aplica directamente: se aplica un
+# overlay (k8s/overlays/dev o prod), que hereda esta base y ajusta réplicas, recursos e imagen.
+#
+#   kubectl kustomize k8s/overlays/dev     # ver el YAML final
+#   kubectl apply -k k8s/overlays/dev      # aplicarlo
+# -----------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Todos los recursos van al namespace charmeetchic.
+namespace: charmeetchic
+
+resources:
+  - namespace.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - api-hpa.yaml
+  - api-pdb.yaml
+  - postgres-statefulset.yaml
+  - postgres-service.yaml
+  - postgres-networkpolicy.yaml
+  # postgres-secret.example.yaml NO se incluye a propósito: el Secret real se crea aparte (ver ese archivo).
+
+# Etiquetas comunes para filtrar todo lo de la aplicación (kubectl get all -l app.kubernetes.io/part-of=charmeetchic).
+# includeSelectors: false -> no se agregan a los selectores (que son inmutables en un Deployment/StatefulSet).
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: charmeetchic
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+    includeTemplates: true
+
+# ConfigMap de la API (configuración NO secreta), leído con envFrom en api-deployment.yaml.
+# Generado por Kustomize: el nombre final lleva un hash del contenido (charmeetchic-api-config-<hash>) y
+# Kustomize actualiza la referencia en el Deployment. Así, cambiar un valor cambia el template del pod y
+# dispara un rolling update; con un ConfigMap de nombre fijo los pods seguirían con la configuración vieja.
+configMapGenerator:
+  - name: charmeetchic-api-config
+    literals:
+      # Activa application-k8s.yml: PostgreSQL en vez de H2, ddl-auto=update, carga idempotente de data.sql.
+      - SPRING_PROFILES_ACTIVE=k8s
+      # Service headless de PostgreSQL (postgres-service.yaml), puerto 5432, base "charmeetchic".
+      - DB_URL=jdbc:postgresql://postgres:5432/charmeetchic
+      # Proyecto de Firebase cuyos ID tokens acepta la API (issuer y audience). No es un secreto.
+      - FIREBASE_PROJECT_ID=charme-et-chic
+      # Modo de validación de JWT: firebase (RS256 con las claves públicas de Google) en el clúster.
+      - JWT_MODE=firebase
+      # Opciones de la JVM (el ENTRYPOINT del Dockerfile las usa):
+      #  - MaxRAMPercentage=70: heap = 70 % del límite de memoria del contenedor (768Mi -> ~537Mi). El 30 %
+      #    restante es para memoria fuera del heap (metaspace, threads, JIT); más de 75 % arriesga OOMKilled.
+      #  - ExitOnOutOfMemoryError: ante un OutOfMemoryError la JVM termina en vez de seguir en un estado
+      #    inconsistente; Kubernetes reinicia el contenedor.
+      - JAVA_OPTS=-XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError

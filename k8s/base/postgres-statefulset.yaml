@@ -1,0 +1,137 @@
+# -----------------------------------------------------------------------------
+# PostgreSQL: base de datos compartida por todas las réplicas de la API.
+#
+# StatefulSet (y no Deployment) porque es un servicio CON ESTADO: el pod tiene un nombre estable
+# (postgres-0) y su propio volumen persistente (volumeClaimTemplates) que sobrevive a reinicios,
+# reprogramaciones e incluso a borrar el StatefulSet. Una sola réplica: replicar PostgreSQL (primario +
+# réplicas de lectura) exige un operador (CloudNativePG, Zalando) o una base administrada (Cloud SQL, RDS),
+# fuera del alcance de este proyecto.
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  # Service headless (postgres-service.yaml) que da el DNS estable postgres-0.postgres.charmeetchic.svc.
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Tiempo para que PostgreSQL haga checkpoint y cierre limpio al recibir SIGTERM (smart shutdown).
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        # 70 = usuario "postgres" de la imagen Alpine oficial. La imagen arranca como root solo para
+        # cambiar dueños de carpetas y luego baja a este usuario; arrancando directo como 70 no hace falta root.
+        runAsUser: 70
+        runAsGroup: 70
+        # El volumen persistente queda con grupo 70 y PostgreSQL puede escribir sus datos.
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          # Versión fija (17.12 sobre Alpine 3.24) y digest: el tag "17" o "latest" podría traer una versión
+          # nueva sin aviso. Un cambio de versión mayor de PostgreSQL exige migrar los datos (pg_upgrade).
+          image: postgres:17.12-alpine3.24@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            # Nombre de la base que crea la imagen en el primer arranque (no es un secreto).
+            - name: POSTGRES_DB
+              value: charmeetchic
+            # Usuario y contraseña desde el Secret postgres-credentials (ver postgres-secret.example.yaml).
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: POSTGRES_PASSWORD
+            # Los datos en una SUBCARPETA del volumen: la raíz de algunos volúmenes trae "lost+found" y
+            # initdb se niega a inicializar un directorio que no está vacío.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              # request = limit en memoria: PostgreSQL no debe ser el primer candidato a desalojo por
+              # presión de memoria del nodo.
+              memory: 512Mi
+          # pg_isready comprueba que el servidor acepta conexiones (no solo que el proceso existe).
+          # startupProbe: el primer arranque ejecuta initdb y puede tardar; tolera hasta 5 s x 30 = 150 s.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          # readinessProbe: mientras falle, el pod no figura como listo y el initContainer de la API sigue esperando.
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # livenessProbe: reinicia PostgreSQL solo si deja de responder durante 60 s.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -h 127.0.0.1 -p 5432 -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Raíz de la imagen en solo lectura; PostgreSQL escribe solo en sus volúmenes:
+            # datos (PVC), socket/lock (/var/run/postgresql) y temporales (/tmp).
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  # Un PersistentVolumeClaim por réplica (data-postgres-0), creado a partir de esta plantilla. Sin
+  # storageClassName usa la clase por defecto del clúster (en kind: "standard", local-path-provisioner).
+  # Al borrar el StatefulSet el PVC se conserva: los datos no se pierden por error.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

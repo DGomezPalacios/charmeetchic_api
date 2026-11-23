@@ -1,0 +1,24 @@
+# NetworkPolicy: solo los pods de la API pueden conectarse a PostgreSQL (puerto 5432). Cualquier otro pod
+# del clúster, aunque esté en el mismo namespace, queda bloqueado: si otro servicio se ve comprometido, no
+# puede llegar a la base. (Requiere un CNI que aplique NetworkPolicy; kindnet lo hace desde kind v0.24.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-api
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: charmeetchic-api
+      ports:
+        - protocol: TCP
+          port: 5432

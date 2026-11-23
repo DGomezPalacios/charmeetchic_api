@@ -1,0 +1,20 @@
+# Service headless (clusterIP: None) del StatefulSet de PostgreSQL. No balancea a través de una IP
+# virtual: el DNS "postgres" resuelve directo a la IP del pod, y además da a cada réplica un nombre estable
+# (postgres-0.postgres.charmeetchic.svc.cluster.local). Es el Service que exige serviceName en un StatefulSet.
+# La API se conecta a jdbc:postgresql://postgres:5432/charmeetchic (DB_URL en kustomization.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP

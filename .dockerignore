@@ -38,6 +38,9 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+# Manifiestos de Kubernetes (se aplican al clúster, no forman parte de la imagen)
+k8s/
+
 # Archivos de Docker (no forman parte del build)
 Dockerfile
 .dockerignore

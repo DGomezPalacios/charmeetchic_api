@@ -1,0 +1,30 @@
+# Ajustes de la API para kind: recursos bajos y el secreto de los JWT de prueba.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: charmeetchic-api
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: api
+          resources:
+            requests:
+              # 100m: cabe en un PC. Como el HPA mide contra el request, en dev escala con poca carga
+              # (70 % de 100m = 70m), útil para ver el autoscaling en acción.
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              # MaxRAMPercentage=70 -> heap ~358Mi; suficiente para el catálogo de ejemplo.
+              memory: 512Mi
+          env:
+            # Secreto HS256 para JWT_MODE=local (mínimo 32 caracteres). Se crea fuera del repositorio:
+            #   kubectl -n charmeetchic create secret generic charmeetchic-api-jwt-local \
+            #     --from-literal=JWT_LOCAL_SECRET="$(openssl rand -hex 32)"
+            - name: JWT_LOCAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: charmeetchic-api-jwt-local
+                  key: JWT_LOCAL_SECRET
