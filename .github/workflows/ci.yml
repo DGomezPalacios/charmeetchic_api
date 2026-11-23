@@ -258,6 +258,8 @@ jobs:
       #   - Las HIGH se reportan sin bloquear: quedan en el log, en el SARIF y en la pestaña Security para
       #     atenderlas vía Dependabot o en una rama propia, sin frenar todo el flujo de trabajo por cada aviso.
       # La versión de Trivy se fija explícitamente para que el resultado no cambie por una versión nueva.
+      # Riesgos aceptados: .trivyignore (los tres pasos lo usan). Cada excepción lleva su justificación y una
+      # fecha de vencimiento (exp:); al vencer, la vulnerabilidad vuelve a aparecer y a bloquear.
 
       # 1) Reporte SARIF (CRITICAL + HIGH) para GitHub Code Scanning. Nunca falla: solo genera el archivo.
       - name: Trivy - reporte SARIF (CRITICAL y HIGH)
@@ -268,6 +270,7 @@ jobs:
           scanners: vuln
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore
           format: sarif
           output: trivy-results.sarif
           exit-code: '0'
@@ -281,6 +284,7 @@ jobs:
           scanners: vuln
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore
           format: table
           exit-code: '0'
           skip-setup-trivy: true
@@ -325,6 +329,7 @@ jobs:
           scanners: vuln
           severity: CRITICAL
           ignore-unfixed: true
+          trivyignores: .trivyignore
           format: table
           exit-code: '1'
           skip-setup-trivy: true
