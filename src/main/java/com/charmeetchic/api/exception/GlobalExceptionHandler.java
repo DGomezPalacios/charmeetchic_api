@@ -67,6 +67,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, ex.getMessage(), req.getRequestURI(), null);
     }
 
+    /** 504: el consumidor RPC no respondió dentro de app.messaging.rpc.timeout-ms. */
+    @ExceptionHandler(GatewayTimeoutException.class)
+    public ResponseEntity<Object> handleGatewayTimeout(GatewayTimeoutException ex, HttpServletRequest req) {
+        log.warn("504 {} {} -> {}", req.getMethod(), req.getRequestURI(), ex.getMessage());
+        return build(HttpStatus.GATEWAY_TIMEOUT, ex.getMessage(), req.getRequestURI(), null);
+    }
+
+    /** 503: RabbitMQ no disponible para una operación síncrona. */
+    @ExceptionHandler(MessagingUnavailableException.class)
+    public ResponseEntity<Object> handleMessagingUnavailable(MessagingUnavailableException ex, HttpServletRequest req) {
+        log.error("503 {} {} -> {}", req.getMethod(), req.getRequestURI(), ex.getMessage());
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), req.getRequestURI(), null);
+    }
+
     @ExceptionHandler({InsufficientStockException.class, ConflictException.class})
     public ResponseEntity<Object> handleConflict(RuntimeException ex, HttpServletRequest req) {
         log.warn("409 {} {} -> {}", req.getMethod(), req.getRequestURI(), ex.getMessage());

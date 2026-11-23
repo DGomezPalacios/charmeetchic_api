@@ -6,13 +6,17 @@ import com.charmeetchic.api.entity.Category;
 import com.charmeetchic.api.entity.Order;
 import com.charmeetchic.api.entity.OrderItem;
 import com.charmeetchic.api.entity.Product;
+import com.charmeetchic.api.enums.MovementType;
 import com.charmeetchic.api.enums.OrderStatus;
 import com.charmeetchic.api.exception.ConflictException;
 import com.charmeetchic.api.exception.InsufficientStockException;
 import com.charmeetchic.api.exception.ResourceNotFoundException;
 import com.charmeetchic.api.exception.ValidationException;
 import com.charmeetchic.api.repository.OrderRepository;
+import com.charmeetchic.api.messaging.producer.SalesEventPublisher;
 import com.charmeetchic.api.repository.ProductRepository;
+import com.charmeetchic.api.streaming.event.VentaEvent;
+import com.charmeetchic.api.streaming.producer.StreamingEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +32,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -41,13 +47,20 @@ class OrderServiceTest {
     private OrderRepository orderRepository;
     @Mock
     private ProductRepository productRepository;
+    @Mock
+    private StockEventService stockEventService;
+    @Mock
+    private SalesEventPublisher salesEventPublisher;
+    @Mock
+    private StreamingEventPublisher streamingPublisher;
 
     private OrderService service;
     private Category category;
 
     @BeforeEach
     void setUp() {
-        service = new OrderService(orderRepository, productRepository, new BigDecimal("0.19"));
+        service = new OrderService(orderRepository, productRepository, stockEventService, salesEventPublisher,
+                streamingPublisher, new BigDecimal("0.19"));
         category = Category.builder().id(1L).name("Collares").build();
     }
 
@@ -221,6 +234,42 @@ class OrderServiceTest {
 
         assertThat(product.getStock()).isEqualTo(10);
         verify(orderRepository).delete(order);
+        verify(stockEventService).stockChanged(product, 7, MovementType.CANCELACION_ORDEN, "cancelación orden #1");
+        // Kafka: la cancelación sale con las líneas de la orden para restarlas de las métricas
+        verify(streamingPublisher).publishVenta(argThat(v -> v.tipo() == VentaEvent.VentaTipo.CANCELADA
+                && v.orderId().equals("1") && v.unidades() == 3 && v.origen() == VentaEvent.Origen.REAL));
+    }
+
+    @Test
+    void createOrder_reportsEachStockChangeWithThePreviousStock() {
+        Product product = product(1L, "10000.00", 10);
+        when(productRepository.findById(1L)).thenReturn(Optional.of(product));
+        when(orderRepository.save(any(Order.class))).thenAnswer(inv -> {
+            Order o = inv.getArgument(0);
+            o.setId(55L);
+            return o;
+        });
+
+        service.createOrder(USER, "Calle 1", List.of(new CartItemDTO(1L, 4)));
+
+        verify(stockEventService).stockChanged(product, 10, MovementType.VENTA, "orden #55");
+        verify(salesEventPublisher).publishSale(argThat(sale -> sale.orderId() == 55L && sale.units() == 4
+                && sale.lines() == 1 && sale.userId().equals(USER)));
+        // Kafka complementa a RabbitMQ: el mismo hecho sale a ventas.eventos con key = id de la orden
+        verify(streamingPublisher).publishVenta(argThat(v -> v.tipo() == VentaEvent.VentaTipo.CREADA
+                && v.orderId().equals("55") && v.unidades() == 4 && v.items().get(0).sku() != null));
+    }
+
+    @Test
+    void createOrder_insufficientStock_reportsNothing() {
+        when(productRepository.findById(1L)).thenReturn(Optional.of(product(1L, "10000.00", 1)));
+
+        assertThatThrownBy(() -> service.createOrder(USER, "Calle 1", List.of(new CartItemDTO(1L, 2))))
+                .isInstanceOf(InsufficientStockException.class);
+
+        verify(stockEventService, never()).stockChanged(any(), anyInt(), any(), any());
+        verify(salesEventPublisher, never()).publishSale(any());
+        verify(streamingPublisher, never()).publishVenta(any());
     }
 
     @Test

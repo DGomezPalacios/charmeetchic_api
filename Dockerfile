@@ -7,6 +7,8 @@
 # Solo se copian pom.xml y src/: secretos (.env, claves de Firebase), node_modules y demás
 # archivos locales nunca entran a la imagen (ver .dockerignore).
 # Los tests no corren aquí: los ejecuta `mvn -B verify` en el job build-and-test del CI.
+# La misma imagen sirve al CI (job docker: build + escaneo + smoke test) y a docker-compose.prod.yml /
+# Codespaces (build: context: .), que solo sobrescriben JAVA_OPTS para repartir la memoria de la VM.
 # -----------------------------------------------------------------------------
 
 # ---------- Etapa 1: compilación (JDK + Maven, se descarta al final) ----------

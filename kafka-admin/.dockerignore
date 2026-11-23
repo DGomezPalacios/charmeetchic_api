@@ -1,0 +1,8 @@
+# Lo que NO se envía a Docker al construir la imagen (más rápido y sin archivos locales).
+target/
+*.iml
+.idea/
+.vscode/
+.env
+.env.*
+*-admin-key.json

@@ -11,6 +11,7 @@ import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
 /** Acceso a datos de productos. Las consultas derivadas se generan a partir del nombre del método. */
 public interface ProductRepository extends JpaRepository<Product, Long> {
@@ -32,6 +33,9 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
     List<Product> findByActiveTrueAndStockLessThanOrderByStockAsc(Integer threshold);
 
     boolean existsBySku(String sku);
+
+    /** Producto activo por SKU (consulta RPC de stock). */
+    Optional<Product> findBySkuAndActiveTrue(String sku);
 
     boolean existsBySkuAndIdNot(String sku, Long id);
 
