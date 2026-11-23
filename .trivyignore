@@ -3,3 +3,9 @@
 # No se corrige ahora porque: Mitigarla exige migrar a una versión mayor (Spring Boot 4), lo que implica cambios incompatibles (breaking changes) que podrían romper la API y su configuración actual.
 # Revisión: 13 de diciembre de 2026 — Realizar la migración controlada a Spring Boot 4, ejecutar la suite de pruebas y eliminar esta excepción de .trivyignore.
 CVE-2026-47884 exp:2026-12-13
+
+# CVE-2026-47890 (spring-webmvc, Server-Sent Events): Vulnerabilidad en Spring MVC 6.2 que afecta el manejo de Server-Sent Events (SSE) cuando se renderizan fragmentos de vista (view fragments).
+# Riesgo aceptado: Esta API es puramente REST (respuestas JSON) y no utiliza SSE ni renderizado de vistas (sin SseEmitter, ServerSentEvent, FragmentsRendering ni text/event-stream en el código), por lo que la funcionalidad vulnerable nunca se expone.
+# No se corrige ahora porque: El parche oficial exige migrar a Spring Boot 4, una versión mayor con cambios incompatibles (breaking changes) que podría romper la API justo antes de la entrega.
+# Revisión: 13 de diciembre de 2026 — Realizar la migración controlada a Spring Boot 4 junto con CVE-2026-47884, ejecutar la suite de pruebas y retirar esta excepción de .trivyignore.
+CVE-2026-47890 exp:2026-12-13
