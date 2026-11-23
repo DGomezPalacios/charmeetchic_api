@@ -65,11 +65,11 @@ public class ConsumerControlService {
     }
 
     private MessageListenerContainer find(String id) {
-        MessageListenerContainer container = registry.getListenerContainer(id);
-        if (container == null) {
+        // Se valida contra los ids registrados en vez de comparar con null (regla de SonarCloud).
+        if (!registry.getListenerContainerIds().contains(id)) {
             throw new ResourceNotFoundException("No existe el consumidor '" + id + "'. Consumidores: "
                     + String.join(", ", registry.getListenerContainerIds()));
         }
-        return container;
+        return registry.getListenerContainer(id);
     }
 }

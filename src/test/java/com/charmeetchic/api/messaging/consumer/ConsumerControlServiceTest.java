@@ -20,6 +20,7 @@ class ConsumerControlServiceTest {
 
     @Test
     void pausarYReanudar_detieneYArrancaElContenedor() {
+        when(registry.getListenerContainerIds()).thenReturn(Set.of("consumidor-movimientos"));
         when(registry.getListenerContainer("consumidor-movimientos")).thenReturn(container);
 
         service.pause("consumidor-movimientos");
