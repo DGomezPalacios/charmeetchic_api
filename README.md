@@ -866,12 +866,49 @@ En el desarrollo de este proyecto se utilizaron herramientas de inteligencia art
 
 ## Conclusiones (Evaluación 2)
 
-<!-- A completar por la autora -->
+Al terminar esta segunda etapa de desarrollo, automatización y despliegue del repositorio charmeetchic-api, se cumple integralmente con los indicadores técnicos y metodológicos de la evaluación:
+
+- **Contenedores y registro:** Implementé un Dockerfile multi-etapa optimizado para empaquetar el artefacto de Spring Boot y publiqué las imágenes resultantes en GitHub Container Registry (ghcr.io) mediante un flujo automatizado.
+- **Pruebas y calidad estática:** Elevé la cobertura de pruebas unitarias y de integración del 87 % al 97 %, respaldada por umbrales estrictos que hacen fallar el build ante cualquier regresión y por el análisis continuo de SonarCloud.
+- **Seguridad en la cadena de suministro:** Integré escaneo de vulnerabilidades en imágenes de contenedor con Trivy, inspección de seguridad del código y del propio pipeline con SonarCloud, y actualización controlada de dependencias con Dependabot.
+- **Despliegue y orquestación:** Orquesté la aplicación en un clúster local de Kubernetes (kind) mediante manifiestos declarativos (Deployments, StatefulSet de PostgreSQL con volumen persistente, Services, ConfigMaps, Horizontal Pod Autoscaler, PodDisruptionBudget y NetworkPolicy), habilitando despliegues sin interrupción de servicio (rolling updates) y autoescalado horizontal frente a variaciones de carga.
+
+El pipeline de CI/CD reforzado aportó controles concretos que bloquearon riesgos reales antes de llegar a las ramas principales:
+
+1. **Seguridad de contenedores (Trivy en el PR #14):** El escaneo de imagen bloqueó el PR #14 al detectar 10 vulnerabilidades de severidad CRITICAL. Para remediarlo, actualicé Spring Boot de la versión 3.2 a la 3.5, logrando reducir a 0 los hallazgos bloqueantes y documentando en `.trivyignore` 2 riesgos residuales aceptados con su respectiva justificación técnica y fecha de vencimiento.
+2. **Endurecimiento del propio pipeline (SonarCloud en el PR #30):** SonarCloud detuvo el PR #30 tras identificar 5 issues de seguridad en el flujo de GitHub Actions asociados a descargas de dependencias sin forzar el protocolo HTTPS, lo que permitió corregir y asegurar la propia infraestructura de integración antes del merge.
+3. **Estabilidad y elasticidad bajo carga:** La cobertura del 97 % con umbrales bloqueantes respaldó la estabilidad del servicio en Kubernetes, donde una prueba de rolling update procesó 1.124 consultas consecutivas con 0 fallos (100 % de disponibilidad), mientras que el Horizontal Pod Autoscaler (HPA) escaló automáticamente de 2 a 3 réplicas al incrementarse la demanda.
+
+Para proyectar esta arquitectura hacia un entorno productivo real, sería bueno incorporar cuatro mejoras prioritarias:
+
+1. **Promoción inmutable de artefactos:** Publicar y desplegar exactamente el mismo digest de imagen OCI escaneado y aprobado por Trivy (evitando reconstrucciones entre etapas) junto con firma digital mediante Cosign.
+2. **Migración a Spring Boot 4:** Planificar una actualización controlada hacia Spring Boot 4 para eliminar de raíz las vulnerabilidades transitivas documentadas en `.trivyignore`.
+3. **Persistencia con migraciones versionadas:** Reemplazar el PostgreSQL que hoy corre dentro del clúster por una instancia administrada en la nube, gestionando la evolución del esquema mediante scripts versionados con Flyway en lugar de data.sql.
+4. **Despliegue en nube gestionada:** Trasladar los manifiestos desde kind hacia un clúster de Kubernetes en la nube (EKS, GKE o AKS) con Ingress Controller, certificados TLS automatizados y monitoreo centralizado.
 
 ## Reflexión personal (Evaluación 2)
 
-<!-- A completar por la autora -->
+Cuando terminé primera evaluación dominaba GitFlow y la validación básica en CI, pero en esta etapa comprendí cómo transformar un .jar compilado en un servicio resiliente, seguro y escalable. Aprendí a construir imágenes Docker multi-etapa ligeras, a configurar manifiestos de Kubernetes (sondas liveness y readiness, estrategias de rolling update y políticas de autoescalado en HPA) y a proteger la cadena de suministro (supply chain security) combinando Trivy, SonarCloud y Dependabot.
+
+Lo que más me costó fueron los efectos colaterales que surgen al integrar controles estrictos en un entorno real. En el PR #14 comprobé que subir Spring Boot de 3.2 a 3.5 eliminó 10 vulnerabilidades críticas, pero introdujo una nueva vulnerabilidad que obligó a evaluar su impacto real antes de documentar una excepción acotada. Asimismo, enfrenté problemas operativos concretos: advertir que H2 en memoria no comparte estado entre múltiples réplicas en Kubernetes; detectar que el parámetro -DskipTests no estaba siendo respetado en ciertas ejecuciones; y corregir el desvío de Pull Requests que apuntaban por defecto hacia main (me pasó dos veces, por no fijarme bien) en lugar de develop, lo que me llevó a implementar una validación automática en el pipeline para bloquear PRs mal dirigidos. También resultó desafiante gestionar Dependabot con criterio técnico, entendiendo que un check en verde no basta para aprobar un merge cuando se trata de saltos de versión mayor incompatibles con el proyecto.
+
+Esta experiencia cambió por completo mi forma de entender la calidad y la seguridad del software: dejé de verlas como etapas finales de revisión para asumirlas como barreras automatizadas, continuas y trazables dentro del propio flujo de entrega. Además, comprendí que en ingeniería de software la seguridad absoluta no existe; lo riguroso es minimizar la superficie de ataque y gestionar los riesgos residuales con transparencia, fundamentos técnicos y plazos definidos.
 
 ## Declaración de uso de IA (Evaluación 2)
 
-<!-- A completar por la autora -->
+En el desarrollo de esta segunda evaluación se utilizaron herramientas de inteligencia artificial generativa como apoyo técnico y metodológico, manteniendo en todo momento la supervisión, validación y toma de decisiones sobre el repositorio, los flujos de CI/CD, la orquestación y el informe:
+
+- **Herramientas utilizadas:**
+  - Claude (modelos Sonnet 5 y Opus 5.5) (como guía conceptual, análisis arquitectónico, apoyo en la revisión crítica de Pull Requests y estructuración del informe) y Claude Code (como asistente de programación en entorno local para la generación del Dockerfile, jobs del pipeline, manifiestos de Kubernetes, pruebas automatizadas, ejecución de validaciones locales y documentación técnica).
+  - Gemini (como apoyo en la revisión de redacción, coherencia metodológica y contraste técnico frente a los indicadores de la rúbrica, señalando observaciones que fueron evaluadas y corregidas directamente por mí).
+- **Distribución de tareas (IA vs. autoría propia):**
+  - Apoyo de la IA: Claude Code generó la estructura base del Dockerfile, los jobs de GitHub Actions, los manifiestos declarativos de Kubernetes, los nuevos casos de prueba para incrementar la cobertura y la documentación técnica, además de ejecutar pruebas locales con Trivy y kind. Por su parte, Claude actuó como apoyo en la detección de hallazgos técnicos: la inconsistencia de estado de H2 al escalar a múltiples réplicas, un test unitario acoplado al reloj del sistema, la omisión del parámetro -DskipTests, los Pull Requests dirigidos hacia main por ser la rama por defecto y las limitaciones de Dependabot frente a los sufijos de versión del JDK. Claude también corrigió datos técnicos en dos puntos de las conclusiones (la lista de manifiestos de Kubernetes y la mejora de persistencia).
+  - Trabajo y decisiones propias: Evalué cada hallazgo y tomé todas las decisiones arquitectónicas y de gobernanza: elegí SonarCloud en lugar de Snyk para el análisis estático y Kubernetes (kind) en lugar de Docker Compose para la orquestación; definí y aprobé los umbrales de cobertura; redacté personalmente las dos justificaciones técnicas y fechas de expiración en .trivyignore, decidiendo aceptar esos riesgos acotados en vez de forzar una migración mayor riesgosa; analicé y cerré los Pull Requests de Dependabot de versiones mayores documentando su motivo; realicé las revisiones de código y ejecuté íntegramente el flujo de ramas, PRs y releases.
+- **Validación de resultados:** Todo el código, pruebas, configuraciones de CI/CD y manifiestos generados con asistencia de IA fueron verificados mediante la revisión de los git diff, la inspección de los checks y logs de GitHub Actions, el cumplimiento del Quality Gate en SonarCloud, los reportes de escaneo de Trivy y las pruebas funcionales y de carga ejecutadas en el clúster local de kind.
+- **Trazabilidad en el historial:** Siguiendo buenas prácticas de transparencia y auditoría, los commits en los que participó la IA fueron identificados explícitamente en el historial de Git mediante la etiqueta Co-Authored-By (registrando a Claude Sonnet 5 y Claude Opus 5.5 según correspondiera), mientras que los commits asociados a .trivyignore se realizaron sin atribución de IA, dado que las justificaciones y decisiones de aceptación de riesgo son de autoría exclusivamente propia.
+
+### Referencias (formato Bibliotecas Duoc UC / APA 7.ª edición)
+
+- Anthropic. (2026). *Claude* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://claude.ai
+- Anthropic. (2026). *Claude Code* (versión consultada en noviembre de 2026) [Herramienta de asistencia de programación con IA]. https://claude.com/claude-code
+- Google. (2026). *Gemini* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://gemini.google.com
