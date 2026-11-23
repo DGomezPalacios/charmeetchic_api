@@ -1,0 +1,21 @@
+# Service ClusterIP: una IP y un nombre DNS estables (charmeetchic-api.charmeetchic.svc) delante de las
+# réplicas de la API, que van y vienen con el HPA y los rolling updates. Reparte el tráfico solo entre los
+# pods Ready (los que pasan la readinessProbe). ClusterIP = accesible solo dentro del clúster; para
+# exponerlo afuera se usaría un Ingress o, en desarrollo, `kubectl port-forward`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: charmeetchic-api
+  labels:
+    app.kubernetes.io/name: charmeetchic-api
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: charmeetchic-api
+  ports:
+    - name: http
+      # Puerto estándar HTTP hacia adentro del clúster; el contenedor escucha en 8080 (puerto "http").
+      port: 80
+      targetPort: http
+      protocol: TCP

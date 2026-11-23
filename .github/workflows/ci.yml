@@ -38,7 +38,7 @@ jobs:
 
       # Instala el JDK 17 (Temurin) y habilita el cache de dependencias Maven
       - name: Configurar JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -136,7 +136,7 @@ jobs:
       # Sube los reportes de tests (surefire = unitarias, failsafe = integración), incluso si el job falló
       - name: Subir reportes de tests
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reportes-tests
           path: |
@@ -146,7 +146,7 @@ jobs:
       # Sube el reporte HTML de cobertura de JaCoCo (abrir index.html), incluso si falló el umbral
       - name: Subir reporte de cobertura
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reporte-cobertura
           path: target/site/jacoco/
@@ -154,7 +154,7 @@ jobs:
 
       # Sube el JAR generado como artefacto del workflow
       - name: Subir JAR generado
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: charmeetchic-api-jar
           path: target/charmeetchic-api-0.0.1-SNAPSHOT.jar
@@ -179,7 +179,7 @@ jobs:
           fetch-depth: 0
 
       - name: Configurar JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -187,7 +187,7 @@ jobs:
 
       # Cache de los plugins de análisis que descarga el scanner (~/.sonar/cache)
       - name: Cache de SonarCloud
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
@@ -227,12 +227,12 @@ jobs:
 
       # Buildx habilita BuildKit y el cache de capas en GitHub Actions (type=gha)
       - name: Configurar Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Construye la imagen y la carga en el Docker del runner (load: true) sin publicarla (push: false).
       # Las labels OCI permiten rastrear desde qué commit y repositorio se generó la imagen.
       - name: Construir imagen Docker
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: false
@@ -343,3 +343,66 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
           category: trivy-imagen
+
+  # Job k8s-validate: renderiza los manifiestos de Kubernetes (k8s/) con Kustomize y los valida contra los
+  # esquemas oficiales de la API de Kubernetes con kubeconform. Detecta antes del merge un campo mal escrito,
+  # un tipo incorrecto o un recurso que no existe en la versión de Kubernetes objetivo, sin necesitar un clúster.
+  # Corre en paralelo con docker-build y sonarcloud, después de build-and-test.
+  k8s-validate:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 10
+    env:
+      # Versiones fijas: el resultado no cambia porque salga una versión nueva de las herramientas.
+      KUSTOMIZE_VERSION: v5.8.3
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+      KUBECONFORM_VERSION: v0.8.0
+      KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+      # Versión de Kubernetes cuyos esquemas se usan: la misma del clúster kind (k8s/kind-config.yaml).
+      K8S_VERSION: 1.35.8
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # Binarios oficiales de las releases de GitHub, sin actions de terceros. Cada descarga se verifica
+      # contra su SHA-256 publicado (checksums.txt / CHECKSUMS de la release): si el archivo fue alterado,
+      # sha256sum -c falla y el job se detiene antes de ejecutarlo.
+      - name: Instalar kustomize y kubeconform (versión fija + checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
+          curl -sSfL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          mkdir -p bin
+          tar -xzf kustomize.tar.gz -C bin kustomize
+          tar -xzf kubeconform.tar.gz -C bin kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # kustomize build de cada overlay: falla si un patch no aplica, falta un archivo o la base es inválida.
+      - name: Renderizar overlays (kustomize build)
+        run: |
+          set -euo pipefail
+          kustomize version
+          mkdir -p rendered
+          kustomize build k8s/overlays/dev  > rendered/dev.yaml
+          kustomize build k8s/overlays/prod > rendered/prod.yaml
+          echo "dev:  $(grep -c '^kind:' rendered/dev.yaml) recursos"
+          echo "prod: $(grep -c '^kind:' rendered/prod.yaml) recursos"
+
+      # kubeconform valida cada recurso contra el esquema JSON de su kind/apiVersion en Kubernetes $K8S_VERSION.
+      #  -strict: rechaza campos que no existen en el esquema (p. ej. "readinesProbe" mal escrito), que
+      #           kubectl ignoraría en silencio.
+      #  -summary: imprime el total de recursos válidos, inválidos y con error.
+      # También se valida el Secret de ejemplo, que no forma parte de ningún overlay.
+      - name: Validar manifiestos (kubeconform -strict)
+        run: |
+          kubeconform -v
+          kubeconform -strict -summary -output text \
+            -kubernetes-version "$K8S_VERSION" \
+            -schema-location default \
+            rendered/dev.yaml rendered/prod.yaml k8s/base/postgres-secret.example.yaml

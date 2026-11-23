@@ -1,0 +1,49 @@
+# -----------------------------------------------------------------------------
+# HorizontalPodAutoscaler: ajusta la cantidad de réplicas de la API según el uso de CPU.
+# Requiere metrics-server en el clúster (en kind se instala aparte, ver docs/kubernetes.md).
+# -----------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: charmeetchic-api
+  labels:
+    app.kubernetes.io/name: charmeetchic-api
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: charmeetchic-api
+  # Nunca menos de 2: alta disponibilidad aunque no haya carga (coincide con las réplicas iniciales y
+  # con el PodDisruptionBudget minAvailable 1, que así siempre deja sacar un pod).
+  minReplicas: 2
+  # Techo de 5: limita el costo y protege a PostgreSQL (5 réplicas x 5 conexiones del pool = 25).
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 70 % del request de CPU (no del límite). Deja un 30 % de margen para absorber un pico mientras
+          # arrancan las réplicas nuevas (Spring Boot tarda decenas de segundos en estar Ready).
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # Reacciona rápido a la carga, pero exige que el aumento se mantenga 30 s (ignora un pico aislado).
+      stabilizationWindowSeconds: 30
+      policies:
+        # Como máximo 2 pods nuevos por minuto: da tiempo a que los nuevos arranquen y bajen el
+        # promedio antes de decidir crear más (evita sobredimensionar).
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      # Antes de bajar, usa la recomendación MÁS ALTA de los últimos 5 min: si la carga sube y baja en
+      # oleadas, no elimina pods para volver a crearlos al minuto (evita oscilar, "flapping").
+      stabilizationWindowSeconds: 300
+      policies:
+        # Baja de a 1 pod cada 2 minutos: una reducción gradual.
+        - type: Pods
+          value: 1
+          periodSeconds: 120

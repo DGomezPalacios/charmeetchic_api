@@ -1,0 +1,43 @@
+# -----------------------------------------------------------------------------
+# Overlay PROD: muestra cómo se ajustan los parámetros de escalabilidad para producción. Hereda k8s/base.
+#
+#   kubectl apply -k k8s/overlays/prod
+#
+# Requisito: la imagen publicada en un registro. Hoy el CI construye y escanea la imagen pero NO la publica
+# (job docker-build); al publicarla, el despliegue fijaría el tag por commit o, mejor, por digest:
+#   cd k8s/overlays/prod && kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api@sha256:<digest>
+# -----------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: charmeetchic-api
+    newName: ghcr.io/dgomezpalacios/charmeetchic-api
+    newTag: 0.0.1-SNAPSHOT
+
+patches:
+  - path: patch-api-prod.yaml
+  - path: patch-postgres-prod.yaml
+  # HPA: piso de 3 réplicas (tolera perder un nodo/zona y seguir con 2) y techo de 10 para picos.
+  # 10 réplicas x 5 conexiones del pool = 50, bajo el max_connections = 100 de PostgreSQL.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: charmeetchic-api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 10
+  # PDB: con 3+ réplicas se exigen 2 disponibles durante un drain (se saca de a 1 pod).
+  - target:
+      kind: PodDisruptionBudget
+      name: charmeetchic-api
+    patch: |-
+      - op: replace
+        path: /spec/minAvailable
+        value: 2

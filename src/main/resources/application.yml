@@ -26,9 +26,18 @@ spring:
       pageable:
         max-page-size: 100
         default-page-size: 10
+  lifecycle:
+    # Apagado ordenado: al recibir SIGTERM, Spring espera hasta 20 s a que terminen las peticiones en
+    # curso antes de cerrar el contexto. En Kubernetes debe ser MENOR que terminationGracePeriodSeconds
+    # (40 s en k8s/base/api-deployment.yaml) menos el preStop (10 s): 10 + 20 = 30 s < 40 s, así el
+    # kubelet nunca mata la JVM con SIGKILL a mitad del apagado.
+    timeout-per-shutdown-phase: 20s
 
 server:
   port: 8080
+  # Deja de aceptar conexiones nuevas y termina las que están en curso antes de apagarse
+  # (Tomcat). Junto con el preStop del Deployment, permite rolling updates sin errores 5xx.
+  shutdown: graceful
   servlet:
     # Todas las rutas cuelgan de /api. Por eso los controladores se mapean a
     # "/products", "/orders"... y la URL final es http://localhost:8080/api/products
