@@ -10,12 +10,26 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Mínimo privilegio: por defecto el GITHUB_TOKEN de todos los jobs solo puede leer el código.
+# Un job que necesite algo más lo pide en su propio bloque `permissions` (que reemplaza a este).
+permissions:
+  contents: read
+
+# Una sola ejecución en curso por PR (o por rama en los push): si llega un commit nuevo, la ejecución
+# anterior se cancela, porque ya valida un estado obsoleto y solo gastaría minutos de runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Primer job: compila el proyecto, corre los tests y valida que el
   # artefacto generado levante correctamente (smoke test)
   build-and-test:
     # Máquina virtual donde se ejecuta el job
     runs-on: ubuntu-latest
+    # Una ejecución normal tarda unos pocos minutos; el límite corta un job colgado
+    # (por ejemplo, un test bloqueado) antes de los 360 minutos por defecto de GitHub.
+    timeout-minutes: 20
 
     steps:
       # Descarga el código del repositorio en el runner
@@ -150,20 +164,25 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     needs: build-and-test
+    timeout-minutes: 20
 
     steps:
       # Descarga el código (el Dockerfile compila desde pom.xml y src/)
       - name: Checkout del código
         uses: actions/checkout@v4
 
+      # Actions de terceros fijadas por el SHA completo del commit, no por tag: un tag se puede mover a otro
+      # commit (si el repositorio de la action se ve comprometido), un SHA no. El comentario indica la versión
+      # y Dependabot (ecosistema github-actions) actualiza ambos.
+
       # Buildx habilita BuildKit y el cache de capas en GitHub Actions (type=gha)
       - name: Configurar Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       # Construye la imagen y la carga en el Docker del runner (load: true) sin publicarla (push: false).
       # Las labels OCI permiten rastrear desde qué commit y repositorio se generó la imagen.
       - name: Construir imagen Docker
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           push: false
