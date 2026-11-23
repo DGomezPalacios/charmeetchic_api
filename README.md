@@ -1,11 +1,16 @@
 # charmeetchic-api
 
 [![CI](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/DGomezPalacios/charmeetchic_api/actions/workflows/ci.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=DGomezPalacios_charmeetchic_api&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=DGomezPalacios_charmeetchic_api)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=DGomezPalacios_charmeetchic_api&metric=coverage)](https://sonarcloud.io/summary/new_code?id=DGomezPalacios_charmeetchic_api)
 
 API REST para el **control de inventario** de la tienda de accesorios y joyas **Charme et Chic**, diseñada para
 crecer hacia un ecommerce (carrito, checkout, pagos).
 
-- **Stack:** Java 17+ · Spring Boot 3.5 · Spring Security · Spring Data JPA · H2 (desarrollo) · JWT · Maven
+- **Stack:** Java 17 · Spring Boot 3.5 · Spring Security · Spring Data JPA · JWT · Maven
+- **Base de datos:** H2 en memoria (desarrollo y tests) · PostgreSQL 17 en Kubernetes (perfil `k8s`)
+- **Contenedores y despliegue:** Docker (imagen multi-etapa publicada en GHCR) · Kubernetes con Kustomize · kind
+- **CI/CD:** GitHub Actions · JaCoCo · SonarCloud · Trivy · Dependabot
 - **Autenticación:** **Firebase Authentication**. La API valida los *ID tokens* de Firebase (firma RS256 con las claves
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
@@ -16,12 +21,15 @@ crecer hacia un ecommerce (carrito, checkout, pagos).
 ## DevOps
 
 Proyecto **individual**: el desarrollo, la revisión de los PR y la gestión del repositorio los realiza una sola persona,
-siguiendo GitFlow con PR obligatorios y CI en GitHub Actions.
+siguiendo GitFlow con PR obligatorios y CI/CD en GitHub Actions. El pipeline completo se describe más abajo, en
+[Pipeline CI/CD (Evaluación 2)](#pipeline-cicd-evaluación-2).
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): modelo de ramas, naming, convención de commits, flujo de merge, versionado,
-  estrategia de revisión y estructura de carpetas.
-- [docs/workflow.md](docs/workflow.md): diagramas del flujo GitFlow y del pipeline de CI, y cuándo se ejecuta el
-  workflow.
+  estrategia de revisión, política de calidad y de seguridad.
+- [docs/workflow.md](docs/workflow.md): diagramas del flujo GitFlow y del pipeline de CI/CD, y qué job corre en cada
+  evento.
+- [docs/kubernetes.md](docs/kubernetes.md): arquitectura en Kubernetes, despliegue en kind paso a paso, despliegue
+  automático y justificación de los parámetros.
 
 ---
 
@@ -48,8 +56,9 @@ instrucciones para agregar más). La base de datos es **en memoria**: se borra a
 Otros comandos:
 
 ```bash
-mvn test                 # tests unitarios + integración
-mvn package              # genera target/charmeetchic-api-0.0.1-SNAPSHOT.jar
+mvn test                 # solo pruebas unitarias (surefire)
+mvn verify               # unitarias + integración (failsafe) + JAR + cobertura JaCoCo con umbrales
+mvn package              # genera target/charmeetchic-api-0.0.1-SNAPSHOT.jar (corre las unitarias)
 java -jar target/charmeetchic-api-0.0.1-SNAPSHOT.jar
 ```
 
@@ -414,6 +423,27 @@ claims del token con `(await user.getIdTokenResult()).claims['roles']`. La API v
 ## Estructura del proyecto
 
 ```
+charmeetchic_api/
+├── .github/
+│   ├── workflows/ci.yml          Pipeline CI/CD (ver "Pipeline CI/CD (Evaluación 2)")
+│   ├── dependabot.yml            Actualizaciones automáticas (Maven, Actions, Docker, npm)
+│   └── pull_request_template.md
+├── docs/                         workflow.md (GitFlow y pipeline) · kubernetes.md (orquestación)
+├── k8s/
+│   ├── base/                     Deployment, Service, HPA, PDB, StatefulSet PostgreSQL, NetworkPolicy...
+│   ├── overlays/dev · prod/      Ajustes por entorno (Kustomize)
+│   ├── ci/smoke-test-pod.yaml    Smoke test dentro del clúster (job deploy)
+│   └── kind-config.yaml          Clúster local: 1 control-plane + 2 workers
+├── scripts/firebase/             Script Node.js para asignar el rol ADMIN (no forma parte de la imagen)
+├── src/                          Código y pruebas (detalle abajo)
+├── Dockerfile · .dockerignore    Imagen multi-etapa (JDK para compilar, JRE Alpine para ejecutar)
+├── .trivyignore                  Riesgos aceptados con justificación y vencimiento
+├── pom.xml                       Dependencias, JaCoCo (umbrales), failsafe, SonarCloud
+├── CONTRIBUTING.md
+└── README.md
+```
+
+```
 src/main/java/com/charmeetchic/api/
 ├── CharmeetchicApiApplication.java
 ├── config/       SecurityConfig · CorsConfig · JwtConfig
@@ -428,8 +458,8 @@ src/main/java/com/charmeetchic/api/
 ├── repository/   Product · Category · Order · OrderItem · User
 ├── security/     AuthenticatedUser (principal del JWT)
 └── service/      Product · Category · Order · Report · User · JwtService · JwksKeyProvider
-src/main/resources/  application.yml · data.sql
-src/test/java/...    tests de servicios (Mockito) y de integración (MockMvc + H2)
+src/main/resources/  application.yml (H2) · application-k8s.yml (PostgreSQL, perfil k8s) · data.sql (idempotente)
+src/test/java/...    unitarias *Test (surefire, Mockito) · integración *IntegrationTest (failsafe, MockMvc + H2)
 ```
 
 Notas sobre la estructura:
@@ -452,7 +482,8 @@ Notas sobre la estructura:
 ## Tests
 
 ```bash
-mvn test
+mvn test      # unitarias (clases *Test, surefire)
+mvn verify    # + integración (clases *IntegrationTest, failsafe) y verificación de cobertura
 ```
 
 - **Servicios** (`ProductService`, `CategoryService`, `OrderService`, `ReportService`): Mockito, sin base de datos.
@@ -501,7 +532,8 @@ La API está pensada para separarse por dominios sin reescribir la seguridad:
 
 ### Antes de producción
 
-- Sustituir H2 por una base de datos real (PostgreSQL/SQL Server), `ddl-auto: validate` y migraciones con Flyway/Liquibase.
+- En Kubernetes la API ya usa PostgreSQL (perfil `k8s`, con `ddl-auto: update`). Falta pasar a `ddl-auto: validate`
+  con migraciones versionadas (Flyway/Liquibase).
 - Desactivar la consola H2 (`spring.h2.console.enabled=false`) y **no** usar `JWT_MODE=local`.
 - Verificar que `FIREBASE_PROJECT_ID` (por defecto `charme-et-chic`) coincide con el Project ID del proyecto de Firebase usado por el frontend.
 - Servir la API solo por HTTPS y ajustar `CORS_ALLOWED_ORIGINS` al dominio real del frontend.
