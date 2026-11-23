@@ -442,14 +442,16 @@ jobs:
       # Binarios oficiales de las releases de GitHub, sin actions de terceros. Cada descarga se verifica
       # contra su SHA-256 publicado (checksums.txt / CHECKSUMS de la release): si el archivo fue alterado,
       # sha256sum -c falla y el job se detiene antes de ejecutarlo.
+      # --proto '=https' --tlsv1.2: curl solo acepta HTTPS con TLS 1.2 o superior, también en las redirecciones que
+      # sigue con -L (las releases de GitHub redirigen a otro dominio): una redirección a http:// hace fallar la descarga.
       - name: Instalar kustomize y kubeconform (versión fija + checksum)
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
-          curl -sSfL -o kustomize.tar.gz \
+          curl --proto '=https' --tlsv1.2 -sSfL -o kustomize.tar.gz \
             "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
           echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
-          curl -sSfL -o kubeconform.tar.gz \
+          curl --proto '=https' --tlsv1.2 -sSfL -o kubeconform.tar.gz \
             "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
           echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
           mkdir -p bin
@@ -648,16 +650,17 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v4
 
+      # Solo HTTPS con TLS 1.2+, incluso tras redirecciones (--proto '=https' --tlsv1.2), y SHA-256 de cada archivo.
       - name: Instalar kind, kubectl y kustomize (versión fija + checksum)
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
           mkdir -p bin
-          curl -sSfL -o bin/kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          curl --proto '=https' --tlsv1.2 -sSfL -o bin/kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
           echo "${KIND_SHA256}  bin/kind" | sha256sum -c -
-          curl -sSfL -o bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl --proto '=https' --tlsv1.2 -sSfL -o bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
           echo "${KUBECTL_SHA256}  bin/kubectl" | sha256sum -c -
-          curl -sSfL -o kustomize.tar.gz \
+          curl --proto '=https' --tlsv1.2 -sSfL -o kustomize.tar.gz \
             "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
           echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
           tar -xzf kustomize.tar.gz -C bin kustomize
