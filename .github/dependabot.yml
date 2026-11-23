@@ -25,13 +25,21 @@ updates:
     commit-message:
       prefix: "build(deps)"
       prefix-development: "build(deps)"
-    # Menores y parches en un solo PR semanal para no saturar; las versiones mayores (posibles cambios
-    # incompatibles, como un salto de Spring Boot 3 a 4) siguen llegando en PRs separados para revisarlas aparte.
+    # Menores y parches en un solo PR semanal para no saturar; las versiones mayores del resto de dependencias
+    # siguen llegando en PRs separados para revisarlas aparte.
     groups:
       maven-menores-y-parches:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Spring Boot 4 es una migración planificada (13-12-2026, ver .trivyignore: CVE-2026-47884 y
+      # CVE-2026-47890), con cambios incompatibles que se harán a mano y con la suite de pruebas, no
+      # mediante un PR automático. Solo se ignoran las mayores: menores y parches de 3.x (incluidas las
+      # de seguridad) siguen llegando.
+      - dependency-name: "org.springframework.boot:spring-boot-starter-parent"
+        update-types:
+          - "version-update:semver-major"
 
   # Actions usadas en .github/workflows/. Las de terceros están fijadas por SHA: Dependabot actualiza
   # el SHA y el comentario con la versión.
@@ -65,6 +73,22 @@ updates:
       - "docker"
     commit-message:
       prefix: "build(deps)"
+    ignore:
+      # La app usa Java 17 LTS: cambiar de JDK es una decisión de arquitectura, no una actualización
+      # automática. Se ignoran solo las versiones mayores; menores, parches y nuevos digest (incluidas
+      # las correcciones de seguridad de la imagen) siguen llegando.
+      - dependency-name: "eclipse-temurin"
+        update-types:
+          - "version-update:semver-major"
+      # Imagen de build (Maven + JDK 17). Mismo motivo: el JDK no se cambia sin una decisión explícita.
+      # Limitación: en el tag "3.9.16-eclipse-temurin-17", Dependabot toma como versión la de Maven (3.x)
+      # y no la del JDK del sufijo (-eclipse-temurin-17). Un cambio de JDK en el sufijo no cuenta como
+      # versión mayor, así que esta regla no lo bloquea (solo bloquea un salto a Maven 4).
+      # Política: esos PRs se revisan y se cierran a mano si cambian el JDK o reemplazan una versión
+      # exacta por un tag que se mueve (ejemplo: PR #20, 3.9.16-eclipse-temurin-17 -> 3.9-eclipse-temurin-26).
+      - dependency-name: "maven"
+        update-types:
+          - "version-update:semver-major"
 
   # Script de administración de Firebase (scripts/firebase/addAdmin.js). No forma parte de la API ni de la
   # imagen Docker, pero sus dependencias (firebase-admin y su árbol) también reciben avisos de seguridad.
