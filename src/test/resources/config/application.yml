@@ -20,3 +20,9 @@ app:
     retry:
       # Sin esperas entre reintentos para que los tests sean rápidos.
       backoff-ms: 0
+  streaming:
+    # Sin Kafka en los tests: no se publican eventos, no se crean tópicos y los @KafkaListener existen pero no
+    # se conectan. StreamingKafkaIntegrationTest lo enciende contra un broker embebido.
+    enabled: false
+    retry:
+      backoff-ms: 0
