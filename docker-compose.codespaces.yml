@@ -1,7 +1,7 @@
 # =============================================================================
-# Override para GitHub Codespaces (se usa JUNTO con docker-compose.prod.yml):
+# Override para GitHub Codespaces (se usa JUNTO con docker-compose.prod.yml y docker-compose.kafka.yml):
 #
-#   docker compose -f docker-compose.prod.yml -f docker-compose.codespaces.yml up -d --build
+#   docker compose -f docker-compose.prod.yml -f docker-compose.kafka.yml -f docker-compose.codespaces.yml up -d --build
 #   (o simplemente: ./deploy/codespaces-up.sh)
 #
 # Diferencias con la VM:
@@ -9,14 +9,62 @@
 #     El servicio queda en un "profile" que no se activa, así que no se levanta.
 #   - El gateway publica su puerto 8000 directamente; Codespaces lo reenvía por HTTPS.
 #   - CORS: FRONTEND_ORIGIN (Firebase Hosting, ambos dominios) + http://localhost:4200, igual que en prod.
-# Todo lo demás (clúster de 2 nodos, postgres, backend, rabbit-admin, límites de memoria) es idéntico.
+#   - KAFKA (EP5): el backend publica y consume en el clúster de docker-compose.kafka.yml (3 ZK + 3 brokers),
+#     se agrega el microservicio kafka-admin y el gateway lo enruta en /kafka-admin/**. En la VM de Azure
+#     (4 GB) no hay Kafka: allí STREAMING_ENABLED queda en false.
+#
+# Memoria total aprox.: stack RabbitMQ ~3,3 GiB + Kafka ~3,4 GiB + kafka-admin 384 MiB = ~7,1 GiB de 16 GB.
 # =============================================================================
 services:
   caddy:
     profiles: ["caddy"]   # desactivado en Codespaces
+
+  backend:
+    environment:
+      STREAMING_ENABLED: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka1:9092,kafka2:9092,kafka3:9092
+      STREAMING_SIMULATED_FAILURES: ${STREAMING_SIMULATED_FAILURES:-true}   # demo de reintentos y .DLT
+      # Más heap que en la VM: ahora también corren los productores y 6 consumidores de Kafka.
+      JAVA_OPTS: -Xmx512m -Xss512k -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC
+    mem_limit: 1024m
+    depends_on:
+      kafka1:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- Administrador de Kafka
+  kafka-admin:
+    build: ./kafka-admin
+    image: charmeetchic-kafka-admin:latest
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka1:9092,kafka2:9092,kafka3:9092
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-charme-et-chic}
+      JAVA_OPTS: -Xmx224m -Xss512k -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC
+    mem_limit: 384m
+    depends_on:
+      kafka1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8082/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
 
   gateway:
     ports:
       - "8000:8000"
     environment:
       CORS_ALLOWED_ORIGINS: ${FRONTEND_ORIGIN:?Falta FRONTEND_ORIGIN en .env},http://localhost:4200
+      KAFKA_ADMIN_URL: http://kafka-admin:8082
+    depends_on:
+      - kafka-admin

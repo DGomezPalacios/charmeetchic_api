@@ -110,6 +110,8 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-charme-et-chic}
       MESSAGING_SIMULATED_FAILURES: ${MESSAGING_SIMULATED_FAILURES:-true}   # activo: se usa en la demo
+      # Kafka (EP5) solo existe en Codespaces/PC (docker-compose.kafka.yml): en la VM de 4 GB queda apagado.
+      STREAMING_ENABLED: ${STREAMING_ENABLED:-false}
       JAVA_OPTS: -Xmx448m -Xss512k -XX:MaxMetaspaceSize=160m -XX:+UseSerialGC
     mem_limit: 768m
     depends_on:

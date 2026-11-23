@@ -1,5 +1,5 @@
 {
-  "name": "charmeetchic - demo EP4 (Codespaces)",
+  "name": "charmeetchic - demo EP4/EP5 RabbitMQ + Kafka (Codespaces)",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {},
@@ -14,7 +14,7 @@
     "cpus": 4,
     "memory": "16gb"
   },
-  "forwardPorts": [8000, 15672],
+  "forwardPorts": [8000, 15672, 8085],
   "portsAttributes": {
     "8000": {
       "label": "gateway (API publica)",
@@ -23,6 +23,11 @@
     "15672": {
       "label": "consola RabbitMQ (privada)",
       "onAutoForward": "silent"
+    },
+    "8085": {
+      "label": "Kafka UI (privada)",
+      "onAutoForward": "silent",
+      "visibility": "private"
     }
   },
   "postCreateCommand": "chmod +x deploy/*.sh",
