@@ -258,20 +258,39 @@ administrador (el cliente no puede modificarlos). El backend acepta cualquiera d
 { "roles": ["ADMIN"] }      // recomendada
 { "role": "ADMIN" }
 { "admin": true }
-{ "ADMIN": true }           // el que asigna addAdmin.js (solo cuenta el booleano true)
+{ "ADMIN": true }           // el que asigna scripts/firebase/addAdmin.js (solo cuenta el booleano true)
 ```
 
 Sin claims (o con valores desconocidos) el usuario es `USER`. Para convertir a alguien en ADMIN usa el **Admin SDK**
-desde una máquina de confianza (nunca desde el frontend ni desde esta API). Ejemplo con Node.js:
+desde una máquina de confianza (nunca desde el frontend ni desde esta API).
+
+**Script incluido en el repo** (`scripts/firebase/`, Node.js 22 o superior): busca el UID por email y asigna
+`{ ADMIN: true }`. La API Java no lo usa y no entra en la imagen Docker.
+
+```bash
+cd scripts/firebase
+npm ci                                   # instala firebase-admin según package-lock.json
+npm run add-admin -- usuario@correo.com  # equivale a: node addAdmin.js usuario@correo.com
+```
+
+- La clave de la cuenta de servicio se busca **junto al script**, en
+  `scripts/firebase/charme-et-chic-firebase-admin-key.json` (ignorada por git y por Docker), sin importar desde qué
+  carpeta se ejecute. Para usar otra ubicación: `FIREBASE_ADMIN_KEY=/ruta/a/clave.json npm run add-admin -- <email>`.
+- La clave se descarga en *Project settings* → *Service accounts* → *Generate new private key*.
+  **No la subas a git** (el `.gitignore` ya la excluye) ni la pongas en el frontend.
+
+Ejemplo mínimo equivalente con la API modular de `firebase-admin` (la API `admin.credential` / `admin.auth()` ya no
+existe desde la v14), asignando el claim recomendado `roles`:
 
 ```js
 // make-admin.js  —  npm i firebase-admin
-const admin = require('firebase-admin');
-admin.initializeApp({ credential: admin.credential.cert(require('./serviceAccountKey.json')) });
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getAuth } = require('firebase-admin/auth');
+initializeApp({ credential: cert(require('./serviceAccountKey.json')) });
 
 (async () => {
   const uid = process.argv[2];                       // UID del usuario (Authentication → Users)
-  await admin.auth().setCustomUserClaims(uid, { roles: ['ADMIN'] });
+  await getAuth().setCustomUserClaims(uid, { roles: ['ADMIN'] });
   console.log(`${uid} ahora es ADMIN`);
 })();
 ```
@@ -280,10 +299,6 @@ admin.initializeApp({ credential: admin.credential.cert(require('./serviceAccoun
 node make-admin.js <UID>
 ```
 
-- El repo incluye `addAdmin.js` (`node addAdmin.js [email]`), que busca el UID por email y asigna `{ ADMIN: true }`;
-  la clave debe estar en `charme-et-chic-firebase-admin-key.json` (ignorada por git).
-- `serviceAccountKey.json` se descarga en *Project settings* → *Service accounts* → *Generate new private key*.
-  **No lo subas a git** (el `.gitignore` ya lo excluye) ni lo pongas en el frontend.
 - Los claims se incorporan al token **la siguiente vez que se renueva**: el usuario debe cerrar sesión y volver a entrar, o
   el frontend llamar a `getIdToken(true)`.
 - Alternativa sin código: guardar los roles en Firestore y leerlos desde la API exigiría el Admin SDK en el backend;

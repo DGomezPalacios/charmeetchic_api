@@ -277,7 +277,7 @@ dependencia vulnerable puede no aparecer en el código, y un secreto expuesto no
 
 | Herramienta | Qué analiza | Cuándo corre |
 |---|---|---|
-| **Dependabot** (`.github/dependabot.yml`) | Dependencias: `pom.xml` (Maven), imágenes base del `Dockerfile` y actions de los workflows. Abre PRs hacia `develop` con la versión nueva. | Revisión semanal (lunes) y, para avisos de seguridad, apenas se publica el aviso. |
+| **Dependabot** (`.github/dependabot.yml`) | Dependencias: `pom.xml` (Maven), imágenes base del `Dockerfile`, actions de los workflows y `scripts/firebase/package.json` (npm). Abre PRs hacia `develop` con la versión nueva. | Revisión semanal (lunes) y, para avisos de seguridad, apenas se publica el aviso. |
 | **SonarCloud** (job `sonarcloud`) | Código fuente: bugs, vulnerabilidades, *security hotspots*, code smells, duplicación y cobertura (lee el XML de JaCoCo). Aplica el *quality gate* al código nuevo. | En cada PR hacia `develop`/`main` y en cada push a `develop`. |
 | **Trivy** (job `docker-build`) | La imagen Docker ya construida: paquetes de Alpine, el JRE y los JAR de la aplicación (Spring, Tomcat, Jackson...). | En cada ejecución del workflow, después de construir la imagen. |
 | **Secret scanning** (GitHub) | Credenciales en el repositorio (tokens, claves privadas, claves de Firebase/Google Cloud). Con *push protection* rechaza el push que contiene un secreto conocido. | En cada push, sobre todo el historial. |
@@ -303,7 +303,7 @@ frenar todo el flujo por cada aviso nuevo.
 
 - **Pestaña Security del repositorio**: *Dependabot alerts*, *Code scanning* (resultados de Trivy, categoría
   `trivy-imagen`) y *Secret scanning*.
-- **PRs de Dependabot**: llevan los labels `dependencies` y el del ecosistema (`java`, `github_actions`, `docker`);
+- **PRs de Dependabot**: llevan los labels `dependencies` y el del ecosistema (`java`, `github_actions`, `docker`, `javascript`);
   las actualizaciones menores y de parche de Maven llegan juntas en un solo PR semanal.
 - **Dashboard de SonarCloud** (organización `dgomezpalacios`, proyecto `DGomezPalacios_charmeetchic_api`): issues,
   hotspots, cobertura y estado del quality gate. En cada PR, SonarCloud también deja el resultado como check.
@@ -336,10 +336,13 @@ charmeetchic_api/
 ├── .github/
 │   ├── workflows/
 │   │   └── ci.yml                    Pipeline de CI (tests, cobertura, SonarCloud, imagen Docker + Trivy)
-│   ├── dependabot.yml                Actualizaciones automáticas de dependencias (Maven, Docker, Actions)
+│   ├── dependabot.yml                Actualizaciones automáticas de dependencias (Maven, Docker, Actions, npm)
 │   └── pull_request_template.md      Plantilla obligatoria de PR
 ├── docs/
 │   └── workflow.md                   Diagramas del flujo GitFlow y del pipeline
+├── scripts/
+│   └── firebase/                     Script Node.js de alta de administradores (addAdmin.js: claim ADMIN en
+│                                     Firebase). No lo usa la API ni entra en la imagen; Dependabot (npm) lo mantiene
 ├── src/
 │   ├── main/
 │   │   ├── java/com/charmeetchic/api/
