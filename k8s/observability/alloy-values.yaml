@@ -1,0 +1,146 @@
+# -----------------------------------------------------------------------------
+# Values de Grafana Alloy (chart grafana/alloy, VERSIÓN FIJA en k8s/observability/versions.env): recolector
+# de logs de los pods hacia Loki. Se usa Alloy y no Promtail porque Promtail está deprecado (Grafana lo dejó
+# en mantenimiento y lo reemplazó por Alloy).
+#
+# Cómo recolecta: loki.source.kubernetes lee los logs de los contenedores a través de la API de Kubernetes
+# (igual que `kubectl logs`). No monta /var/log del nodo (hostPath) ni necesita correr como root ni como
+# DaemonSet: un solo pod (Deployment) alcanza para un clúster de un nodo.
+#
+#   helm upgrade --install alloy grafana/alloy --version "$ALLOY_VERSION" -n monitoring \
+#     -f k8s/observability/alloy-values.yaml
+# -----------------------------------------------------------------------------
+fullnameOverride: alloy
+
+controller:
+  type: deployment
+  replicas: 1
+  podLabels:
+    app.kubernetes.io/part-of: charmeetchic-observability
+  # emptyDir para /tmp (estado de Alloy), porque la raíz del contenedor es de solo lectura.
+  volumes:
+    extra:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 256Mi
+
+# Solo lo que Alloy necesita para leer logs; el chart crea la ClusterRole con permisos de lectura de pods.
+crds:
+  create: false
+
+alloy:
+  # Sin telemetría de uso hacia Grafana Labs.
+  enableReporting: false
+  resources:
+    requests:
+      cpu: 20m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 473
+    runAsGroup: 473
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+  # Liveness (el chart solo trae readiness en /-/ready): reinicia Alloy si deja de responder.
+  livenessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 12345
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    failureThreshold: 3
+  # Con la raíz en solo lectura, Alloy escribe su estado (posiciones de lectura) en un emptyDir.
+  storagePath: /tmp/alloy
+  mounts:
+    extra:
+      - name: tmp
+        mountPath: /tmp
+  configMap:
+    create: true
+    content: |
+      // 1) Descubre los pods del clúster.
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // 2) Etiquetas útiles para filtrar en Grafana: namespace, pod, contenedor y app. Se descarta kube-system
+      //    (muy ruidoso y fuera del alcance de la aplicación).
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          regex         = "kube-system"
+          action        = "drop"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "node"
+        }
+      }
+
+      // 3) Lee los logs por la API de Kubernetes (sin hostPath).
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.pods.receiver]
+      }
+
+      // 4) Los logs de la API son JSON ECS anidado ({"log":{"level":...}}): se extrae log.level como label "level" (cardinalidad
+      //    baja: INFO/WARN/ERROR) para que el panel de errores filtre rápido. Las demás líneas pasan sin cambios.
+      loki.process "pods" {
+        forward_to = [loki.write.default.receiver]
+
+        stage.match {
+          selector = "{app=\"charmeetchic-api\", container=\"api\"}"
+
+          stage.json {
+            expressions = { level = "log.level", trace_id = "traceId" }
+          }
+          stage.labels {
+            values = { level = "" }
+          }
+          stage.structured_metadata {
+            values = { trace_id = "" }
+          }
+        }
+      }
+
+      // 5) Envía a Loki (Service ClusterIP del modo monolítico).
+      loki.write "default" {
+        endpoint {
+          url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+
+# Sidecar que recarga la configuración de Alloy cuando cambia el ConfigMap: requests y limits (K8S-06).
+configReloader:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi

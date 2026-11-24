@@ -1,0 +1,29 @@
+# ServiceMonitor (CRD de Prometheus Operator): le dice a Prometheus QUÉ leer. Selecciona el Service de la API
+# (namespace charmeetchic, label app.kubernetes.io/name=charmeetchic-api) y lee el puerto "http" de CADA pod
+# detrás del Service (un target por réplica) en /api/actuator/prometheus cada 30 s, sin token (SecurityConfig
+# lo deja público; es la única ruta de métricas expuesta).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: charmeetchic-api
+  labels:
+    app.kubernetes.io/name: charmeetchic-api
+    app.kubernetes.io/component: monitoring
+spec:
+  # El label "job" de las series será el nombre del Service: job="charmeetchic-api".
+  jobLabel: app.kubernetes.io/name
+  # Copia a cada serie la versión de la app del pod (label del pod), útil para comparar versiones.
+  podTargetLabels:
+    - app.kubernetes.io/version
+  namespaceSelector:
+    matchNames:
+      - charmeetchic
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: charmeetchic-api
+  endpoints:
+    - port: http
+      # El context-path /api de Spring también aplica a Actuator.
+      path: /api/actuator/prometheus
+      interval: 30s
+      scrapeTimeout: 10s

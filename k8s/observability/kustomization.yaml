@@ -1,0 +1,40 @@
+# -----------------------------------------------------------------------------
+# Recursos PROPIOS del monitoreo de la API (no los charts de Helm): ServiceMonitor, alertas y dashboard.
+# Requieren las CRDs de Prometheus Operator, que instala kube-prometheus-stack; por eso se aplican DESPUÉS
+# del helm upgrade --install del stack (orden y comandos en docs/observabilidad.md).
+#
+#   kubectl apply -k k8s/observability
+#
+# Los charts de Helm (versiones fijas en versions.env) se configuran con los *-values.yaml de esta carpeta.
+# -----------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+resources:
+  - namespace.yaml
+  - api-servicemonitor.yaml
+  - api-prometheusrule.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: charmeetchic-observability
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+# Dashboard versionado como JSON. El sidecar de Grafana carga todo ConfigMap con la label grafana_dashboard=1.
+# Nombre fijo (sin hash): el sidecar detecta el cambio de contenido por sí solo y así no quedan ConfigMaps
+# huérfanos con dashboards viejos en cada cambio.
+configMapGenerator:
+  - name: grafana-dashboard-charmeetchic-api
+    files:
+      - dashboards/charmeetchic-api.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/name: charmeetchic-api
+        app.kubernetes.io/component: dashboard
+      annotations:
+        grafana_folder: Charme et Chic
