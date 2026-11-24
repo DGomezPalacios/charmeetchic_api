@@ -242,6 +242,48 @@ un PR, bloquea el merge si es check requerido.
 | 10 | Rollout | `deploy` / `deploy-aks` (`kubectl rollout status`) | Los pods no quedan Ready en 10 min | El job falla e imprime el diagnóstico; con `maxUnavailable: 0` las réplicas anteriores siguen atendiendo |
 | 11 | Smoke test en el clúster | `deploy` / `deploy-aks` (pod con curl contra el Service) | `/api/health` sin `UP`, versión distinta o `/api/products` ≠ 200 | El job falla; en AKS no se publican métricas de ese despliegue |
 | 12 | Prometheus lee la API | `deploy-aks` | Ningún target `up == 1` en 2 min | El job falla: el despliegue no es observable |
+| 13 | Inmutabilidad de la imagen | `publish-image` | Un tag `vX.Y.Z` sobre un commit sin `sha-<commit>` publicado, un error de GHCR distinto de *not found*, o un tag promovido que no queda en el digest de `sha-<commit>` | No se construye ni se sobrescribe nada; sin imagen, `deploy` y `deploy-aks` no corren |
+| 14 | Despliegue por digest | `deploy` / `deploy-aks` | `publish-image` no entregó el digest, o el YAML final de AKS no fija `imagen@sha256:…` | El job falla antes del `kubectl apply` |
+
+### Incidente: el tag de versión sobrescribió `sha-<commit>` (v3.0.0)
+
+**Qué pasó.** El merge del PR #36 a `main` publicó `ghcr.io/dgomezpalacios/charmeetchic-api:sha-38a1369` con el
+digest `59c4…`. Después, el push del tag `v3.0.0` **sobre el mismo commit** volvió a ejecutar `publish-image`, que
+**reconstruyó** la imagen y publicó otra vez `sha-38a1369`, ahora con el digest `150b…` (un build nuevo nunca es
+idéntico bit a bit: cambian las fechas de las capas, el SBOM y la provenance). El job `deploy` comparó el digest de la
+imagen descargada con el que le entregó `publish-image`, detectó la diferencia y se detuvo. La verificación funcionó,
+pero el tag que debía ser inmutable había dejado de serlo: lo que se probó y escaneó (`59c4…`) ya no era lo que el
+tag `sha-38a1369` entregaba.
+
+**Causa.** `publish-image` construía en **todos** los push, también en los tags de versión, y `metadata-action`
+siempre incluía `sha-<commit>` en la lista de tags. Un tag de Git apunta a un commit ya publicado, así que el
+resultado era un segundo build con el mismo nombre inmutable. Lo mismo habría pasado con un *re-run* del job.
+
+**Corrección (hotfix `hotfix/imagen-inmutable`).**
+
+- **El tag promueve, no reconstruye.** En un push de `vX.Y.Z`, `publish-image` busca `sha-<commit>` en GHCR
+  (`docker buildx imagetools inspect`) y agrega los tags `X.Y.Z` y `X.Y` **al mismo digest** con
+  `docker buildx imagetools create`. Con una sola fuente, `imagetools create` copia el índice tal cual: se comprobó con
+  `--dry-run` que el índice resultante tiene el mismo digest (`150bf3…` → `150bf3…`). Después de crear los tags, el
+  job verifica que cada uno apunte a ese digest. Si `sha-<commit>` no existe (un tag sobre un commit cuyo pipeline no
+  publicó imagen), el job falla con un mensaje claro en lugar de construir.
+- **Un re-run no sobrescribe.** En un push a una rama, si `sha-<commit>` ya existe no se construye: se reutiliza su
+  digest como output y solo se mueve el tag de la rama (`develop`/`main`, mutable por diseño). Solo un *not found*
+  explícito habilita el build; cualquier otro error de GHCR detiene el job (ante la duda no se construye).
+- **El build normal no cambia:** SBOM, provenance `mode=max` y la atestación de GitHub. La imagen promovida conserva
+  los tres, porque el SBOM y la provenance viven dentro del índice y la atestación va ligada al digest.
+- **Se despliega por digest.** `deploy-aks` fija la imagen como `ghcr.io/…@sha256:<digest>` con kustomize (los nodos
+  de AKS descargan exactamente ese contenido, aunque un tag se mueva). `deploy` descarga `imagen@digest`, la
+  etiqueta **localmente** como `sha-<commit>` y la carga con `kind load` (kind necesita un nombre con tag). Ambos
+  agregan el digest al `change-cause` y la anotación `charmeetchic.cl/image-digest` al Deployment y a los pods.
+
+**Efecto colateral aceptado.** La label OCI `org.opencontainers.image.version` de una imagen promovida es la del build
+original (`main`), no `X.Y.Z`: cambiarla exigiría otro manifiesto y, por lo tanto, otro digest. La versión publicada
+se lee en los tags `X.Y.Z`/`X.Y` y la versión de la aplicación en `/api/health`.
+
+**Estado del tag afectado.** `sha-38a1369` sigue apuntando a `150b…`, el rebuild (verificado con
+`docker buildx imagetools inspect`). No se reescribe a mano: se deja como evidencia del incidente, y el próximo
+despliegue sale de un commit nuevo, ya con la promoción inmutable.
 
 ### Evidencia real
 

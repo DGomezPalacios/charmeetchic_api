@@ -946,7 +946,7 @@ flowchart TD
 
 En un PR corren `build-and-test`, `sonarcloud`, `docker-build` y `k8s-validate` (más `gitflow-guard` si la base es
 `main`): son los checks requeridos. En un push a `develop` o `main` corre la cadena completa hasta `deploy`. En un tag
-`vX.Y.Z` se publica la imagen con los tags de versión, sin `sonarcloud` (el commit ya se analizó al llegar a `main`) y
+`vX.Y.Z` se promueve la imagen ya publicada a los tags de versión (sin rebuild), sin `sonarcloud` (el commit ya se analizó al llegar a `main`) y
 sin `deploy` (ya se desplegó en el push a `main`).
 
 ### Jobs
@@ -1047,19 +1047,20 @@ flowchart LR
 
 | Elemento | Valor |
 |---|---|
-| Tag inmutable | `sha-<7 caracteres del commit>`: identifica exactamente el commit; es el que usa el despliegue. |
-| Tags móviles | `develop` / `main` (lo último de cada rama) y `X.Y.Z` / `X.Y` en un tag de Git `vX.Y.Z`. |
+| Tag inmutable | `sha-<7 caracteres del commit>`: identifica exactamente el commit; se construye una sola vez (un re-run reutiliza la imagen existente). |
+| Tags móviles | `develop` / `main` (lo último de cada rama) y `X.Y.Z` / `X.Y` en un tag de Git `vX.Y.Z`, que se agregan al digest de `sha-<commit>` sin rebuild. |
 | Digest | `sha256:…` del manifiesto; se publica en el Job Summary y lo recibe el job `deploy`. |
 | Labels y anotaciones OCI | `org.opencontainers.image.revision` (commit completo), `source` (repositorio), `created`, `version`; generadas por `docker/metadata-action`, no escritas a mano. |
 | SBOM | Lista de paquetes y JAR de la imagen, adjunta a la imagen en el registro (`sbom: true`). |
 | Provenance | Atestación SLSA de BuildKit (`provenance: mode=max`): cómo, cuándo y desde qué commit se construyó. |
 | Atestación de GitHub | `actions/attest-build-provenance`, firmada con Sigstore (OIDC) y asociada al digest. |
 
-**2. Imagen → despliegue** (job `deploy`): se despliega la imagen por su tag `sha-<commit>` y antes se comprueba que
-su digest sea el que publicó `publish-image`. El Deployment recibe:
+**2. Imagen → despliegue** (jobs `deploy` y `deploy-aks`): se despliega la imagen **por digest**, el que publicó
+`publish-image` (en AKS `imagen@sha256:…`; en kind se descarga por digest y se etiqueta localmente antes de
+`kind load`). El Deployment recibe:
 
-- `kubernetes.io/change-cause`: `Despliegue <entorno> del commit <sha> (run <número>)`, visible en la columna
-  CHANGE-CAUSE de `kubectl rollout history`.
+- `kubernetes.io/change-cause`: `Despliegue <entorno> del commit <sha> (imagen sha256:<12>, run <número>)`, visible en
+  la columna CHANGE-CAUSE de `kubectl rollout history`, y la anotación `charmeetchic.cl/image-digest`.
 - En cada pod: `charmeetchic.cl/git-commit` (commit completo), `charmeetchic.cl/image-digest` y
   `charmeetchic.cl/workflow-run` (enlace a la ejecución), y la label `app.kubernetes.io/version`.
 
