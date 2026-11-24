@@ -95,6 +95,11 @@ management:
     health:
       # Sin detalles (estado de la base, disco, etc.) para un cliente anónimo: solo {"status":"UP"}.
       show-details: never
+  health:
+    rabbit:
+      # Con la mensajería apagada (Kubernetes, tests) no hay broker: el indicador de RabbitMQ daría DOWN y
+      # /actuator/health respondería 503 aunque la API funcione. Sigue al mismo interruptor que la mensajería.
+      enabled: ${app.messaging.enabled:true}
   metrics:
     # Etiqueta común a TODAS las métricas: permite filtrar por aplicación en Prometheus/Grafana aunque
     # haya otras apps en el mismo clúster (y la usan las alertas de k8s/observability).
