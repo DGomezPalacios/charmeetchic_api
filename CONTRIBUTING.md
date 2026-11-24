@@ -132,9 +132,11 @@ facilita la revisión (como en `feature/health-version` y `feature/filtro-precio
 2. **El merge a `main` despliega en production**: el push a `main` publica la imagen (tags `sha-<commit>` y `main`) y
    el job `deploy` la despliega en el entorno **`production`** (overlay prod: 3 réplicas, HPA 3-10, PDB 2). Si el
    environment `production` tiene *Required reviewers*, el despliegue espera la aprobación en la pestaña *Actions*.
-3. Tras el merge, crear un **tag anotado** sobre el commit de merge en `main`. El push del tag vuelve a validar y
-   publica la misma imagen con los tags de versión `X.Y.Z` y `X.Y` (no vuelve a desplegar: ese commit ya está en
-   production):
+3. Tras el merge, **esperar a que el pipeline de `main` publique la imagen** (`publish-image` en verde) y crear un
+   **tag anotado** sobre ese commit de merge. El push del tag **promueve la imagen ya publicada, sin rebuild**: busca
+   `sha-<commit>` en GHCR y le agrega los tags `X.Y.Z` y `X.Y` al **mismo digest** (`docker buildx imagetools
+   create`). No vuelve a desplegar (ese commit ya está en production). Si `sha-<commit>` no existe, el job falla: el
+   tag debe ir sobre un commit cuyo pipeline publicó la imagen.
 
    ```bash
    git checkout main && git pull
@@ -142,14 +144,22 @@ facilita la revisión (como en `feature/health-version` y `feature/filtro-precio
    git push origin v1.0.0
    ```
 
+   **Por qué sin rebuild:** el tag `sha-<commit>` es inmutable y el despliegue usa el digest. Antes, el tag `v3.0.0`
+   reconstruyó la imagen y sobrescribió `sha-38a1369` con otro digest, y `deploy` se detuvo (incidente documentado
+   en [docs/observabilidad.md](docs/observabilidad.md#incidente-el-tag-de-versión-sobrescribió-sha-commit-v300)). Lo
+   que se publica como `X.Y.Z` es exactamente el artefacto que pasó los tests, Trivy y el despliegue. Un *re-run* de
+   `publish-image` tampoco reconstruye: reutiliza el digest existente.
+
 4. Si después de la release hubo cambios en `main` que no están en `develop` (un hotfix), hacer back-merge
    `main → develop` para que ambas ramas no diverjan.
 
 | Paso | Rama | Entorno | Imagen en GHCR |
 |---|---|---|---|
-| Merge de un PR `feature/*` o `docs/*` | `develop` | `staging` | `sha-<commit>`, `develop` |
-| Merge de la release o de un hotfix | `main` | `production` | `sha-<commit>`, `main` |
-| Tag `vX.Y.Z` sobre `main` | — | (sin despliegue) | `X.Y.Z`, `X.Y` y `sha-<commit>` |
+| Merge de un PR `feature/*` o `docs/*` | `develop` | `staging` | build: `sha-<commit>`, `develop` |
+| Merge de la release o de un hotfix | `main` | `production` | build: `sha-<commit>`, `main` |
+| Tag `vX.Y.Z` sobre `main` | — | (sin despliegue) | sin build: `X.Y.Z` y `X.Y` se agregan al digest de `sha-<commit>` |
+
+Los despliegues (`deploy` y `deploy-aks`) usan la imagen **por digest** (`imagen@sha256:…`), no por tag.
 
 Detalle de los jobs en [docs/workflow.md](docs/workflow.md#pipeline-de-cicd) y del despliegue en
 [docs/kubernetes.md](docs/kubernetes.md#despliegue-automático).

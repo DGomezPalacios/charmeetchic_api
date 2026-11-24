@@ -4,8 +4,9 @@
 #   kubectl apply -k k8s/overlays/prod
 #
 # Lo despliega automáticamente el job "deploy" del CI en cada push a main (GitHub Environment "production"):
-# publish-image publica la imagen en ghcr.io y deploy fija aquí, solo dentro del runner, el tag inmutable del
-# commit y las anotaciones de trazabilidad (ver docs/kubernetes.md, "Despliegue automático"):
+# publish-image publica la imagen en ghcr.io; deploy la descarga POR DIGEST, la etiqueta localmente como
+# sha-<commit>, la carga en kind y fija aquí, solo dentro del runner, ese tag local y las anotaciones de
+# trazabilidad, incluido el digest (ver docs/kubernetes.md, "Despliegue automático"):
 #   kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api:sha-<commit>
 # El tag de abajo es solo el valor por defecto para un despliegue manual.
 # -----------------------------------------------------------------------------
