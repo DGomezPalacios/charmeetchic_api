@@ -600,6 +600,8 @@ jobs:
   # PR desde un fork no tiene permiso de escritura en el registro. Por eso no es un check requerido de los PRs.
   # Corre después de build-and-test y docker-build: solo se publica una imagen que pasó los tests, el escaneo de
   # Trivy y la verificación del contenedor.
+  # Inmutabilidad: sha-<commit> se construye UNA sola vez. Un tag vX.Y.Z promueve ese mismo digest (sin rebuild) y
+  # un re-run reutiliza la imagen existente.
   publish-image:
     runs-on: ubuntu-latest
     needs: [build-and-test, docker-build]
@@ -615,11 +617,12 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    # Lo que necesita el job deploy para desplegar exactamente esta imagen.
+    # Lo que necesita el job deploy para desplegar exactamente esta imagen. El digest es el de la imagen recién
+    # construida o, si sha-<commit> ya existía (re-run o tag de versión), el de la imagen existente.
     outputs:
       image: ${{ steps.vars.outputs.image }}
       sha-tag: ${{ steps.vars.outputs.sha_tag }}
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
 
     steps:
       - name: Checkout del código
@@ -644,23 +647,101 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # El tag sha-<commit> es INMUTABLE: una vez publicado, nunca se reconstruye ni se sobrescribe (incidente
+      # del tag v3.0.0, ver docs/observabilidad.md). Antes de construir se consulta si ya existe en GHCR:
+      #  - existe (re-run, o un tag vX.Y.Z sobre un commit ya publicado) -> se reutiliza su digest;
+      #  - "not found" -> hay que construirlo (solo en push a una rama);
+      #  - cualquier otro error (red, autenticación) -> el job falla: ante la duda no se construye, porque
+      #    construir podría sobrescribir un sha-<commit> que sí existía.
+      - name: Buscar sha-<commit> en GHCR
+        id: existing
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          SHA_TAG: ${{ steps.vars.outputs.sha_tag }}
+        run: |
+          set -uo pipefail
+          if out=$(docker buildx imagetools inspect "${IMAGE}:${SHA_TAG}" --format '{{.Manifest.Digest}}' 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "digest=${out}" >> "$GITHUB_OUTPUT"
+            echo "${IMAGE}:${SHA_TAG} ya existe con digest ${out}: no se reconstruye."
+          elif grep -qi 'not found' <<< "$out"; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "${IMAGE}:${SHA_TAG} no existe todavía."
+          else
+            echo "::error title=No se pudo consultar GHCR::${out}"
+            exit 1
+          fi
+
+      # Push de un tag de Git vX.Y.Z (release): PROMOCIÓN del artefacto ya publicado, sin rebuild. Los tags X.Y.Z y
+      # X.Y se agregan al MISMO digest de sha-<commit> con imagetools create (con una sola fuente copia el índice
+      # tal cual: misma imagen, mismo SBOM, misma provenance y la atestación de GitHub sigue valiendo porque va
+      # asociada al digest). Una pre-release (vX.Y.Z-rc.1) solo recibe su versión completa, no X.Y.
+      - name: Promover la imagen al tag de versión (sin rebuild)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          SHA_TAG: ${{ steps.vars.outputs.sha_tag }}
+          EXISTS: ${{ steps.existing.outputs.exists }}
+          DIGEST: ${{ steps.existing.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "$EXISTS" != "true" ]; then
+            echo "::error title=No hay imagen que promover::${IMAGE}:${SHA_TAG} no existe en GHCR. El tag ${GITHUB_REF_NAME} debe crearse sobre un commit de main cuyo pipeline ya publicó la imagen (merge a main en verde). No se construye una imagen nueva en un tag de versión."
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error title=Tag de versión inválido::${GITHUB_REF_NAME} no es vX.Y.Z (SemVer)."
+            exit 1
+          fi
+          new_tags=("${IMAGE}:${VERSION}")
+          if [ -z "${BASH_REMATCH[4]}" ]; then
+            new_tags+=("${IMAGE}:${BASH_REMATCH[1]}.${BASH_REMATCH[2]}")
+          fi
+          args=()
+          for t in "${new_tags[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
+          # Comprobación: cada tag nuevo apunta exactamente al digest de sha-<commit>.
+          for t in "${new_tags[@]}"; do
+            got=$(docker buildx imagetools inspect "$t" --format '{{.Manifest.Digest}}')
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::${t} quedó con ${got} y no con ${DIGEST}"
+              exit 1
+            fi
+            echo "${t} -> ${got}"
+          done
+          printf '%s\n' "${IMAGE}:${SHA_TAG}" "${new_tags[@]}" > "$RUNNER_TEMP/tags.txt"
+
+      # Push a una rama con sha-<commit> ya publicado (re-run, o el mismo commit en develop y main): no se
+      # reconstruye; solo se mueve el tag de la rama (develop/main, que es mutable por diseño) a ese digest.
+      - name: Reutilizar la imagen existente (sin rebuild)
+        if: startsWith(github.ref, 'refs/heads/') && steps.existing.outputs.exists == 'true'
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          SHA_TAG: ${{ steps.vars.outputs.sha_tag }}
+          DIGEST: ${{ steps.existing.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "${IMAGE}:${GITHUB_REF_NAME}" "${IMAGE}@${DIGEST}"
+          printf '%s\n' "${IMAGE}:${SHA_TAG}" "${IMAGE}:${GITHUB_REF_NAME}" > "$RUNNER_TEMP/tags.txt"
+
+      # Build normal: solo en push a una rama y solo si sha-<commit> no existe.
       # Tags de la imagen publicada:
-      #  - sha-<commit corto>: INMUTABLE, identifica exactamente el commit; es el que usa el despliegue.
+      #  - sha-<commit corto>: INMUTABLE, identifica exactamente el commit; es el que se promueve en un release.
       #  - develop / main: el nombre de la rama; se mueve con cada push (lo último de cada entorno).
-      #  - X.Y.Z y X.Y: solo en un tag de Git vX.Y.Z (release). X.Y apunta a la última corrección de esa versión.
+      # Los tags X.Y.Z y X.Y NO salen de aquí: los agrega el paso de promoción al digest ya publicado.
       # Labels y anotaciones OCI (revision, source, version, created...) generadas por metadata-action.
       # DOCKER_METADATA_ANNOTATIONS_LEVELS: las anotaciones van al manifiesto y al índice (con SBOM y
       # provenance la imagen se publica como índice OCI).
       - name: Metadatos de la imagen (tags, labels y anotaciones OCI)
         id: meta
+        if: startsWith(github.ref, 'refs/heads/') && steps.existing.outputs.exists == 'false'
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ${{ steps.vars.outputs.image }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=ref,event=branch
             type=sha,prefix=sha-,format=short
 
@@ -670,6 +751,7 @@ jobs:
       #  - sbom: true: SBOM (lista de paquetes y JAR de la imagen) adjunto a la imagen en el registro.
       - name: Construir y publicar la imagen
         id: build
+        if: steps.meta.outcome == 'success'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -685,7 +767,9 @@ jobs:
       # Atestación de procedencia de GitHub (firmada con Sigstore) asociada al digest: permite verificar con
       # `gh attestation verify oci://<imagen>@<digest> --repo <owner>/<repo>` que la imagen salió de este
       # repositorio y de este workflow. push-to-registry: también la guarda junto a la imagen en ghcr.io.
+      # Solo tras un build: una imagen reutilizada o promovida ya tiene su atestación (va ligada al digest).
       - name: Atestación de procedencia (GitHub)
+        if: steps.build.outcome == 'success'
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ steps.vars.outputs.image }}
@@ -696,10 +780,20 @@ jobs:
         env:
           IMAGE: ${{ steps.vars.outputs.image }}
           SHA_TAG: ${{ steps.vars.outputs.sha_tag }}
-          DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
-          VERSION: ${{ steps.meta.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
+          BUILT_TAGS: ${{ steps.meta.outputs.tags }}
+          BUILT: ${{ steps.build.outcome == 'success' }}
         run: |
+          if [ "$BUILT" = "true" ]; then
+            MODE="Construida en esta ejecución (SBOM + provenance + atestación)"
+            TAGS="$BUILT_TAGS"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            MODE="Promovida sin rebuild: tag de versión sobre el digest de ${SHA_TAG}"
+            TAGS="$(cat "$RUNNER_TEMP/tags.txt" 2>/dev/null)"
+          else
+            MODE="Reutilizada sin rebuild: ${SHA_TAG} ya existía en GHCR"
+            TAGS="$(cat "$RUNNER_TEMP/tags.txt" 2>/dev/null)"
+          fi
           {
             echo "## Imagen publicada en GHCR"
             echo
@@ -708,13 +802,13 @@ jobs:
             echo "| Imagen | \`${IMAGE}\` |"
             echo "| Tag inmutable | \`${SHA_TAG}\` |"
             echo "| Digest | \`${DIGEST}\` |"
+            echo "| Modo | ${MODE} |"
             echo "| Commit | [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) |"
             echo "| Ref | \`${GITHUB_REF}\` |"
-            echo "| org.opencontainers.image.version | \`${VERSION}\` |"
             echo
             echo "**Tags:**"
             echo
-            while read -r tag; do echo "- \`${tag}\`"; done <<< "$TAGS"
+            while read -r tag; do [ -n "$tag" ] && echo "- \`${tag}\`"; done <<< "$TAGS"
             echo
             echo "Descargar por digest (inmutable): \`docker pull ${IMAGE}@${DIGEST}\`"
             echo
