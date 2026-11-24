@@ -4,7 +4,7 @@
 #
 # Por qué no se usa el overlay prod tal cual: prod reserva 3 réplicas x 500m de CPU + PostgreSQL 500m = 2 vCPU
 # de REQUESTS, es decir, el nodo entero. En un nodo de 2 vCPU, AKS deja ~1,9 vCPU asignables y sus propios pods
-# de sistema (CoreDNS, metrics-server, CSI de discos, red) ya reservan ~0,7 vCPU; además corre el stack de
+# de sistema (CoreDNS, metrics-server, CSI de discos, Azure NPM) ya reservan ~0,93 vCPU (medido); además corre el stack de
 # monitoreo (~0,4 vCPU y ~1,5 GB de requests). Con prod, los pods de la API quedarían Pending para siempre.
 # Este overlay mantiene la misma imagen, seguridad, probes y configuración que prod (JWT_MODE=firebase) y solo
 # baja réplicas y requests. Detalle del presupuesto en docs/observabilidad.md ("Overlay aks").

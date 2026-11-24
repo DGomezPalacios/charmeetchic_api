@@ -106,9 +106,13 @@ base (imagen de GHCR, seguridad, probes, `JWT_MODE=firebase`) y solo ajusta capa
 | Disco de PostgreSQL | 10Gi | 4Gi |
 | PDB `minAvailable` | 2 | 1 (base) |
 
-Presupuesto aproximado de **requests** en el nodo: sistema de AKS ~0,7 vCPU; monitoreo ~0,4 vCPU y ~1,5 GB; API +
-PostgreSQL 0,25 vCPU y ~1,8 GB. Total ≈ 1,35 de ~1,9 vCPU asignables; queda margen para el `maxSurge` del rolling
-update y para que el HPA suba a 3 réplicas. Los límites de CPU (1 núcleo por réplica) usan CPU ociosa sin reservarla.
+**Requests medidos en AKS** (Standard_D2s_v4, Kubernetes 1.36, `kubectl describe node` con todo desplegado):
+**1637m de 1900m de CPU (86 %) y 4462 Mi de 5789 Mi de memoria (77 %)**. Los pods de sistema de AKS (CoreDNS,
+metrics-server, CSI de discos y archivos, Azure NPM, konnectivity, etc.) reservan ~0,93 vCPU y ~1 GB por sí solos; el
+monitoreo ~0,4 vCPU y ~1,5 GB; la API y PostgreSQL 0,25 vCPU y ~1,8 GB. El margen restante (~260m y ~1,3 GB) alcanza
+para el pod extra del rolling update (`maxSurge: 1`, 100m/768Mi) o para la tercera réplica del HPA. Con `prod` se
+habría necesitado 2 vCPU solo para la API y PostgreSQL. El uso real es mucho menor que lo reservado (~0,4 vCPU y
+~3,2 GB en `kubectl top node`); los límites de CPU (1 núcleo por réplica) usan esa CPU ociosa sin reservarla.
 
 ---
 
