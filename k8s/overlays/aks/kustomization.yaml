@@ -21,10 +21,13 @@ resources:
   - ../../base
 
 # Imagen pública de GHCR: los nodos de AKS la descargan sin imagePullSecret.
+# Tag por defecto de un despliegue MANUAL: un tag inmutable que existe en GHCR (sha-2503c68 = merge del PR #34 en
+# main). "0.0.1-SNAPSHOT" (la versión del pom.xml) nunca se publica como tag y daba ImagePullBackOff. El job
+# deploy-aks siempre lo reemplaza por el sha-<commit> recién publicado; a mano: kustomize edit set image.
 images:
   - name: charmeetchic-api
     newName: ghcr.io/dgomezpalacios/charmeetchic-api
-    newTag: 0.0.1-SNAPSHOT
+    newTag: sha-2503c68
 
 patches:
   - path: patch-api-aks.yaml
