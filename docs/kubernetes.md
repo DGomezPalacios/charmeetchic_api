@@ -257,8 +257,8 @@ simulado**: un clúster kind creado dentro del runner de GitHub Actions, con los
 | `develop` | `staging` | `k8s/overlays/dev` | 2 / 2-3 | `local` |
 | `main` | `production` | `k8s/overlays/prod` | 3 / 3-10 | `firebase` |
 
-Un tag `vX.Y.Z` no despliega (su commit ya se desplegó al llegar a `main`): solo publica la imagen con los tags
-`X.Y.Z` y `X.Y`.
+Un tag `vX.Y.Z` no despliega (su commit ya se desplegó al llegar a `main`) ni reconstruye: agrega los tags `X.Y.Z` y
+`X.Y` al digest ya publicado de `sha-<commit>`.
 
 ### Flujo
 
@@ -289,9 +289,11 @@ sequenceDiagram
 
 `deploy` modifica el overlay **solo dentro del runner** (no se commitea) con `kustomize edit`:
 
-- `kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api:sha-<commit>`: la imagen por
-  su tag inmutable. Se usa el tag y no `@digest` porque la imagen se carga en los nodos con `kind load` (sin
-  registro); el digest se verifica antes de cargarla y queda en una anotación.
+- `kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api:sha-<commit>`: un tag
+  **local**. La imagen se descarga por digest (`imagen@sha256:…`), se etiqueta en el runner como `sha-<commit>` y se
+  carga en los nodos con `kind load` (sin registro, kind necesita un nombre con tag): ese tag apunta a lo descargado
+  por digest, no a lo que diga GHCR. El digest queda en `change-cause` y en una anotación. En AKS (`deploy-aks`) la
+  imagen se fija directamente como `imagen@sha256:…`.
 - Un patch **solo del Deployment de la API** (PostgreSQL no se toca ni se reinicia):
 
   | Campo | Valor |

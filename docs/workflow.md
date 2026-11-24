@@ -89,7 +89,7 @@ flowchart TD
     end
 
     subgraph ENTREGA["Entrega (solo push)"]
-        PI["publish-image<br/>GHCR · tags sha-commit, rama, X.Y.Z, X.Y<br/>labels OCI · SBOM · provenance · atestación<br/>outputs: digest + tag sha"]
+        PI["publish-image<br/>GHCR · build: tags sha-commit y rama · tag vX.Y.Z: promoción sin rebuild<br/>labels OCI · SBOM · provenance · atestación<br/>outputs: digest + tag sha"]
         DE["deploy<br/>kind en el runner · kind load de la imagen sha-commit<br/>Secrets generados · kustomize (imagen + trazabilidad)<br/>apply -k · rollout status · smoke test en el clúster"]
     end
 
@@ -115,14 +115,14 @@ flowchart TD
 | `sonarcloud` | ✅ (no desde forks) | ✅ | ✅ | — |
 | `docker-build` | ✅ | ✅ | ✅ | ✅ |
 | `k8s-validate` | ✅ | ✅ | ✅ | ✅ |
-| `publish-image` | — | ✅ tags `sha-…`, `develop` | ✅ tags `sha-…`, `main` | ✅ tags `sha-…`, `X.Y.Z`, `X.Y` |
+| `publish-image` | — | ✅ tags `sha-…`, `develop` | ✅ tags `sha-…`, `main` | ✅ sin rebuild: `X.Y.Z`, `X.Y` al digest de `sha-…` |
 | `compliance-audit` | ✅ | ✅ | ✅ | ✅ |
 | `deploy` | — | ✅ **staging** (overlay dev) | ✅ **production** (overlay prod) | — |
 | `deploy-aks` | — | — | ✅ **production** en AKS (overlay aks) | — |
 | `rabbit-admin`, `gateway`, `kafka-admin` | ✅ | ✅ | ✅ | ✅ |
 
-- Un **tag** no despliega: el commit etiquetado ya se desplegó en production cuando llegó a `main`; el tag solo agrega
-  los nombres de versión `X.Y.Z` y `X.Y` a la imagen.
+- Un **tag** no despliega ni reconstruye: el commit etiquetado ya se desplegó en production cuando llegó a `main`; el
+  tag solo agrega los nombres de versión `X.Y.Z` y `X.Y` al digest ya publicado de `sha-<commit>` (promoción).
 - **`compliance-audit` es check requerido** en `main` y `develop`; **`deploy-aks` no** (solo corre en el push a
   `main`). `deploy` y `deploy-aks` usan el mismo environment `production`: si tiene *Required reviewers*, cada uno
   espera su aprobación.
@@ -154,7 +154,7 @@ flowchart LR
 | Eslabón | Dónde se ve | Cómo |
 |---|---|---|
 | Commit → imagen | Job Summary de `publish-image`; paquete en GHCR | Tag `sha-<7 caracteres>` (no se reutiliza) y digest. `docker pull ghcr.io/dgomezpalacios/charmeetchic-api@<digest>` |
-| Imagen → commit | Labels OCI de la imagen | `docker inspect --format '{{json .Config.Labels}}' <imagen>`: `org.opencontainers.image.revision` es el commit y `version` sale de metadata-action (X.Y.Z, la rama o `pr-N`), no está escrita a mano. |
+| Imagen → commit | Labels OCI de la imagen | `docker inspect --format '{{json .Config.Labels}}' <imagen>`: `org.opencontainers.image.revision` es el commit y `version` sale de metadata-action (la rama o `pr-N`), no está escrita a mano. Una imagen promovida a `X.Y.Z` conserva la label del build original: cambiarla cambiaría el digest; la versión publicada son sus tags. |
 | Contenido y origen de la imagen | SBOM y provenance en el registro; atestación en el repositorio | `docker buildx imagetools inspect <imagen> --format '{{json .SBOM}}'` · `gh attestation verify oci://<imagen>@<digest> --repo DGomezPalacios/charmeetchic_api` |
 | Despliegue → commit e imagen | Pods del clúster | Anotaciones `charmeetchic.cl/git-commit` (SHA completo), `charmeetchic.cl/image-digest`, `charmeetchic.cl/workflow-run` y la label `app.kubernetes.io/version`. |
 | Historial de despliegues | `kubectl rollout history` | Columna CHANGE-CAUSE: `Despliegue <entorno> del commit <sha> (run <número>)`. |
@@ -174,7 +174,7 @@ flowchart LR
 | `pull_request` | hacia `main` | Sí | Valida la release o el hotfix antes de llegar a producción; mismos checks. |
 | `push` | `develop` | Sí | Validación + publicación de la imagen (`sha-…`, `develop`) + despliegue en **staging**. Resultado en el badge del README. |
 | `push` | `main` | Sí | Validación + publicación (`sha-…`, `main`) + despliegue en **production**. |
-| `push` | tag `vX.Y.Z` | Sí | Validación + publicación con los tags `X.Y.Z` y `X.Y`. Sin despliegue ni SonarCloud. |
+| `push` | tag `vX.Y.Z` | Sí | Validación + promoción: los tags `X.Y.Z` y `X.Y` se agregan al digest ya publicado de `sha-<commit>`, sin rebuild. Sin despliegue ni SonarCloud. |
 | `push` | `feature/*`, `docs/*`, `hotfix/*` | No | No hay ejecución hasta que se abre el PR. |
 
 ---
@@ -258,15 +258,22 @@ Job `publish-image` (`needs: [build-and-test, docker-build]`; solo en push a `de
 1. **Nombre de la imagen**: `ghcr.io/<dueño en minúsculas>/charmeetchic-api` y el tag inmutable `sha-<7 caracteres>`.
 2. **Login en GHCR** (`docker/login-action`) con el `GITHUB_TOKEN` del workflow (`packages: write`); no hay tokens
    personales ni credenciales guardadas.
-3. **Metadatos** (`docker/metadata-action`): tags `sha-<commit>`, nombre de la rama y, en un tag `vX.Y.Z`, `X.Y.Z` y
-   `X.Y`; labels y anotaciones OCI (en el manifiesto y en el índice).
-4. **Construir y publicar** (`docker/build-push-action`, `push: true`): reutiliza el cache `gha` que llenó
-   `docker-build`, y adjunta la atestación de **provenance** (SLSA, `mode=max`) y el **SBOM** generados por BuildKit.
-5. **Atestación de procedencia** (`actions/attest-build-provenance`, `id-token: write` y `attestations: write`):
-   atestación firmada con Sigstore, asociada al digest, verificable con `gh attestation verify`.
-6. **Outputs del job**: `image`, `sha-tag` y `digest`, que usa `deploy`.
-7. **Job Summary**: imagen, tag inmutable, digest, commit, versión OCI, lista de tags y comandos para descargar por
-   digest y verificar la atestación.
+3. **Buscar `sha-<commit>` en GHCR** (`docker buildx imagetools inspect`). `sha-<commit>` es inmutable: se
+   construye una sola vez. Un error distinto de *not found* detiene el job.
+4. **Tag `vX.Y.Z` → promoción sin rebuild**: `docker buildx imagetools create` agrega `X.Y.Z` y `X.Y` (solo `X.Y.Z`
+   en una pre-release) al digest de `sha-<commit>` y verifica que cada tag quede en ese digest. Si `sha-<commit>` no
+   existe, falla.
+5. **Push a una rama con `sha-<commit>` ya publicado** (re-run): no reconstruye; mueve el tag de la rama a ese digest.
+6. **Metadatos** (`docker/metadata-action`, solo si hay que construir): tags `sha-<commit>` y nombre de la rama;
+   labels y anotaciones OCI (en el manifiesto y en el índice).
+7. **Construir y publicar** (`docker/build-push-action`, `push: true`, solo si `sha-<commit>` no existía): reutiliza
+   el cache `gha` que llenó `docker-build`, y adjunta la atestación de **provenance** (SLSA, `mode=max`) y el
+   **SBOM** generados por BuildKit.
+8. **Atestación de procedencia** (`actions/attest-build-provenance`, `id-token: write` y `attestations: write`, solo
+   tras un build): atestación firmada con Sigstore, asociada al digest, verificable con `gh attestation verify`.
+9. **Outputs del job**: `image`, `sha-tag` y `digest` (el construido o el existente), que usan `deploy` y `deploy-aks`.
+10. **Job Summary**: imagen, tag inmutable, digest, modo (construida, reutilizada o promovida), commit, lista de tags
+    y comandos para descargar por digest y verificar la atestación.
 
 Job `deploy` (`needs: [publish-image, k8s-validate]`; solo en push a `develop` o `main`; GitHub Environment `staging`
 o `production`). Detalle en [kubernetes.md](kubernetes.md#despliegue-automático).
@@ -274,15 +281,15 @@ o `production`). Detalle en [kubernetes.md](kubernetes.md#despliegue-automático
 1. **Instalar kind, kubectl y kustomize** en versiones fijas (kind `v0.33.0`, kubectl `v1.35.8`, kustomize `v5.8.3`),
    verificadas por SHA-256.
 2. **Crear el clúster kind** con `k8s/kind-config.yaml` (1 control-plane + 2 workers, Kubernetes 1.35.8).
-3. **Descargar la imagen** `sha-<commit>` de GHCR (`packages: read`), **verificar que su digest** sea el que publicó
-   `publish-image` y cargarla en los nodos con `kind load docker-image` (los nodos no descargan de GHCR, así que no
-   importa si el paquete es público o privado).
+3. **Descargar la imagen por digest** (`imagen@sha256:…`, el que publicó `publish-image`; `packages: read`),
+   etiquetarla **localmente** como `sha-<commit>` y cargarla en los nodos con `kind load docker-image` (kind necesita
+   un nombre con tag; los nodos no descargan de GHCR, así que no importa si el paquete es público o privado).
 4. **Leer la versión de la aplicación** del `pom.xml` (la que expone `/api/health`).
 5. **Crear el namespace y los Secrets** con contraseñas generadas en el runner (`openssl rand`), enmascaradas con
    `::add-mask::` y sin imprimirse.
-6. **Fijar imagen y trazabilidad con kustomize** (solo en el runner): `kustomize edit set image` con el tag
-   `sha-<commit>` y un patch del Deployment con `kubernetes.io/change-cause`, las anotaciones del commit completo, el
-   digest y la ejecución, y la label `app.kubernetes.io/version`.
+6. **Fijar imagen y trazabilidad con kustomize** (solo en el runner): `kustomize edit set image` con el tag local
+   `sha-<commit>` y un patch del Deployment con `kubernetes.io/change-cause` (incluye el digest), la anotación del
+   digest y, en los pods, las del commit completo, el digest y la ejecución, y la label `app.kubernetes.io/version`.
 7. **`kubectl apply -k`** del overlay del entorno y **`kubectl rollout status`** con timeout (PostgreSQL 300 s, API
    600 s).
 8. **Smoke test dentro del clúster** (`k8s/ci/smoke-test-pod.yaml`): un pod con curl llama al Service;
@@ -318,8 +325,9 @@ Job `deploy-aks` (`needs: [build-and-test, publish-image, compliance-audit, k8s-
    existe.
 4. **Secret de PostgreSQL** generado en el runner solo si no existe (PostgreSQL fija la contraseña en el primer
    arranque; una nueva en cada despliegue dejaría a la API sin acceso).
-5. **Fijar imagen y trazabilidad** en el overlay `aks` (igual que `deploy`): tag `sha-<commit>`, change-cause,
-   commit, digest y ejecución. La imagen es pública: los nodos la descargan de GHCR sin credenciales.
+5. **Fijar imagen y trazabilidad** en el overlay `aks`: la imagen **por digest** (`imagen@sha256:…`; el job falla si
+   el YAML final no la contiene), change-cause, commit, digest y ejecución. La imagen es pública: los nodos la
+   descargan de GHCR sin credenciales.
 6. **`kubectl apply -k`**, **rollout status** y **smoke test** dentro del clúster. La duración del despliegue se mide
    desde el apply hasta que pasa el smoke test.
 7. **Verificar que Prometheus lee la API**: por port-forward consulta `sum(up{job="charmeetchic-api"})`; falla si
