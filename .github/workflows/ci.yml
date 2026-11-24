@@ -819,7 +819,7 @@ jobs:
   # Solo en push a develop (entorno "staging", overlay dev) o a main (entorno "production", overlay prod); no en
   # PRs ni en tags. Usa GitHub Environments: cada ejecución queda registrada como un deployment del repositorio
   # (pestaña Deployments) y el entorno puede exigir aprobación manual (Settings -> Environments).
-  # Despliega exactamente la imagen que publicó publish-image (tag sha-<commit>, verificada por digest) y solo
+  # Despliega exactamente la imagen que publicó publish-image (descargada por digest, sha256:...) y solo
   # después de que k8s-validate validó los manifiestos.
   deploy:
     runs-on: ubuntu-latest
@@ -880,9 +880,11 @@ jobs:
           kind create cluster --config k8s/kind-config.yaml --wait 180s
           kubectl get nodes -o wide
 
-      # Descarga la imagen publicada por su tag inmutable y comprueba que su digest sea el que publicó
-      # publish-image. Luego la carga en los nodos con kind load: los nodos no la descargan de ghcr.io, así que
-      # el despliegue no depende de la visibilidad (pública o privada) del paquete.
+      # Descarga la imagen POR DIGEST (${IMAGE}@${DIGEST}): el contenido es exactamente el que publicó
+      # publish-image, aunque alguien mueva o sobrescriba un tag en GHCR. kind load necesita un nombre con tag,
+      # así que se etiqueta LOCALMENTE como ${IMAGE}:${SHA_TAG} (ese tag apunta a lo descargado por digest, no a
+      # lo que diga GHCR). Los nodos no la descargan de ghcr.io (IfNotPresent + kind load), así que el despliegue
+      # no depende de la visibilidad (pública o privada) del paquete.
       - name: Login en GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
@@ -893,12 +895,13 @@ jobs:
       - name: Descargar la imagen y cargarla en kind
         run: |
           set -euo pipefail
-          docker pull "${IMAGE}:${SHA_TAG}"
-          if ! docker image inspect --format '{{join .RepoDigests "\n"}}' "${IMAGE}:${SHA_TAG}" | grep -qF "@${DIGEST}"; then
-            echo "::error::El digest de ${IMAGE}:${SHA_TAG} no coincide con el publicado (${DIGEST})"
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::publish-image no entregó el digest de la imagen"
             exit 1
           fi
-          echo "Digest verificado: ${DIGEST}"
+          docker pull "${IMAGE}@${DIGEST}"
+          docker tag "${IMAGE}@${DIGEST}" "${IMAGE}:${SHA_TAG}"
+          echo "Imagen descargada por digest ${DIGEST} y etiquetada localmente como ${IMAGE}:${SHA_TAG}"
           kind load docker-image "${IMAGE}:${SHA_TAG}" --name charmeetchic
 
       # Versión de la aplicación (la del pom.xml): la que expone GET /api/health y la de la label
@@ -929,9 +932,9 @@ jobs:
           fi
 
       # Fija en el overlay (solo en el runner, no se commitea) qué se despliega:
-      #  - la imagen por su tag inmutable sha-<commit>;
-      #  - un patch del Deployment con kubernetes.io/change-cause (columna CHANGE-CAUSE de rollout history),
-      #    las anotaciones del pod (commit completo, digest, ejecución del workflow) y la label de versión.
+      #  - la imagen con el tag LOCAL sha-<commit> que se cargó en kind (descargada por digest en el paso anterior);
+      #  - un patch del Deployment con kubernetes.io/change-cause (columna CHANGE-CAUSE de rollout history, con el
+      #    digest), la anotación del digest, las del pod (commit completo, digest, ejecución) y la label de versión.
       #    Es un patch solo del Deployment de la API: el StatefulSet de PostgreSQL no cambia y no se reinicia.
       - name: Fijar imagen y trazabilidad con kustomize
         working-directory: k8s/overlays/${{ env.OVERLAY }}
@@ -946,7 +949,8 @@ jobs:
             echo "  labels:"
             echo "    app.kubernetes.io/version: \"${APP_VERSION}\""
             echo "  annotations:"
-            echo "    kubernetes.io/change-cause: \"Despliegue ${ENVIRONMENT} del commit ${GITHUB_SHA} (run ${GITHUB_RUN_NUMBER})\""
+            echo "    kubernetes.io/change-cause: \"Despliegue ${ENVIRONMENT} del commit ${GITHUB_SHA} (imagen ${DIGEST:0:19}, run ${GITHUB_RUN_NUMBER})\""
+            echo "    charmeetchic.cl/image-digest: \"${DIGEST}\""
             echo "spec:"
             echo "  template:"
             echo "    metadata:"
@@ -1013,8 +1017,7 @@ jobs:
             echo "|---|---|"
             echo "| Entorno | \`${ENVIRONMENT}\` (overlay \`k8s/overlays/${OVERLAY}\`, clúster kind efímero en el runner) |"
             echo "| Commit | [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) |"
-            echo "| Imagen | \`${IMAGE}:${SHA_TAG}\` |"
-            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Imagen | \`${IMAGE}@${DIGEST}\` (cargada en kind como \`${SHA_TAG}\`) |"
             echo "| Versión de la aplicación | \`${APP_VERSION:-?}\` |"
             echo
             echo "### Pods"
@@ -1048,7 +1051,7 @@ jobs:
   # (compliance-audit), los manifiestos validados (k8s-validate) y el quality gate de SonarCloud (sonarcloud).
   # build-and-test va en needs solo para leer sus outputs (cobertura y tests); ya era requisito de los demás.
   # Pasos: kubeconfig desde el secret KUBE_CONFIG_AKS -> stack de monitoreo con helm upgrade --install
-  # (idempotente) -> Secrets generados en el runner -> overlay aks con la imagen sha-<commit> y anotaciones de
+  # (idempotente) -> Secrets generados en el runner -> overlay aks con la imagen fijada por digest y anotaciones de
   # trazabilidad -> rollout -> smoke test -> Prometheus lee la API -> métricas del despliegue al Pushgateway
   # (por port-forward: no está expuesto a internet) -> Job Summary.
   # Overlay aks y no prod: prod no cabe en el nodo de 2 vCPU / 8 GB junto al monitoreo (k8s/overlays/aks).
@@ -1167,12 +1170,17 @@ jobs:
             echo "Secret postgres-credentials ya existe: se conserva."
           fi
 
-      # Igual que el job deploy: imagen por tag inmutable + patch de trazabilidad, solo dentro del runner.
+      # Imagen POR DIGEST (${IMAGE}@${DIGEST}): los nodos de AKS descargan exactamente el artefacto publicado,
+      # aunque un tag se mueva o se sobrescriba en GHCR. Más el patch de trazabilidad, solo dentro del runner.
       - name: Fijar imagen y trazabilidad con kustomize
         working-directory: k8s/overlays/${{ env.OVERLAY }}
         run: |
           set -euo pipefail
-          kustomize edit set image "charmeetchic-api=${IMAGE}:${SHA_TAG}"
+          if [ -z "${DIGEST}" ]; then
+            echo "::error::publish-image no entregó el digest de la imagen"
+            exit 1
+          fi
+          kustomize edit set image "charmeetchic-api=${IMAGE}@${DIGEST}"
           {
             echo "apiVersion: apps/v1"
             echo "kind: Deployment"
@@ -1181,7 +1189,8 @@ jobs:
             echo "  labels:"
             echo "    app.kubernetes.io/version: \"${APP_VERSION}\""
             echo "  annotations:"
-            echo "    kubernetes.io/change-cause: \"Despliegue ${ENVIRONMENT} (AKS) del commit ${GITHUB_SHA} (run ${GITHUB_RUN_NUMBER})\""
+            echo "    kubernetes.io/change-cause: \"Despliegue ${ENVIRONMENT} (AKS) del commit ${GITHUB_SHA} (imagen ${DIGEST:0:19}, run ${GITHUB_RUN_NUMBER})\""
+            echo "    charmeetchic.cl/image-digest: \"${DIGEST}\""
             echo "spec:"
             echo "  template:"
             echo "    metadata:"
@@ -1195,6 +1204,10 @@ jobs:
           kustomize edit add patch --path deploy-trace-patch.yaml
           kustomize build . > "$RUNNER_TEMP/rendered.yaml"
           grep -nE 'image: |change-cause|git-commit|image-digest' "$RUNNER_TEMP/rendered.yaml"
+          if ! grep -qF "image: ${IMAGE}@${DIGEST}" "$RUNNER_TEMP/rendered.yaml"; then
+            echo "::error::El YAML final no fija la API en ${IMAGE}@${DIGEST}"
+            exit 1
+          fi
 
       # Duración del despliegue: desde que se aplican los manifiestos de la API hasta que pasa el smoke test.
       - name: Aplicar manifiestos y esperar el rollout
@@ -1248,7 +1261,7 @@ jobs:
           export DEPLOY_DURATION=$(( DEPLOY_END - DEPLOY_START ))
           export DEPLOY_TIMESTAMP="$DEPLOY_END"
           export COMMIT="$GITHUB_SHA" RUN_ID="$GITHUB_RUN_ID"
-          export IMAGE="${IMAGE}:${SHA_TAG}"
+          export IMAGE="${IMAGE}@${DIGEST}"
           echo "DEPLOY_DURATION=${DEPLOY_DURATION}" >> "$GITHUB_ENV"
           scripts/ci/push-deploy-metrics.sh
 
@@ -1274,8 +1287,7 @@ jobs:
             echo "|---|---|"
             echo "| Entorno | \`${ENVIRONMENT}\` (overlay \`k8s/overlays/${OVERLAY}\`, Azure Kubernetes Service) |"
             echo "| Commit | [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) |"
-            echo "| Imagen | \`${IMAGE}:${SHA_TAG}\` |"
-            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Imagen | \`${IMAGE}@${DIGEST}\` (commit \`${SHA_TAG}\`) |"
             echo "| Versión de la aplicación | \`${APP_VERSION:-?}\` |"
             echo "| Duración del despliegue | ${DEPLOY_DURATION:-?} s (apply → rollout → smoke test) |"
             echo "| Cobertura de líneas / ramas | ${COVERAGE_LINES:-?} % / ${COVERAGE_BRANCHES:-?} % |"

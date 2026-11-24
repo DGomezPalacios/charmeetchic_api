@@ -11,8 +11,8 @@
 #
 #   kubectl apply -k k8s/overlays/aks
 #
-# El job deploy-aks fija aquí, solo dentro del runner, el tag inmutable sha-<commit> y las anotaciones de
-# trazabilidad (igual que deploy con prod/dev). El tag de abajo es el valor por defecto de un despliegue manual.
+# El job deploy-aks fija aquí, solo dentro del runner, la imagen POR DIGEST (ghcr.io/...@sha256:...) y las
+# anotaciones de trazabilidad (commit, change-cause y digest). El tag de abajo es el valor por defecto de un despliegue manual.
 # -----------------------------------------------------------------------------
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -23,7 +23,9 @@ resources:
 # Imagen pública de GHCR: los nodos de AKS la descargan sin imagePullSecret.
 # Tag por defecto de un despliegue MANUAL: un tag inmutable que existe en GHCR (sha-2503c68 = merge del PR #34 en
 # main). "0.0.1-SNAPSHOT" (la versión del pom.xml) nunca se publica como tag y daba ImagePullBackOff. El job
-# deploy-aks siempre lo reemplaza por el sha-<commit> recién publicado; a mano: kustomize edit set image.
+# deploy-aks siempre lo reemplaza por el digest publicado; a mano:
+#   kustomize edit set image charmeetchic-api=ghcr.io/dgomezpalacios/charmeetchic-api@sha256:<digest>
+# (se mantiene un tag y no un digest como valor por defecto para que el archivo siga siendo legible).
 images:
   - name: charmeetchic-api
     newName: ghcr.io/dgomezpalacios/charmeetchic-api
