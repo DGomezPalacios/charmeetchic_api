@@ -42,3 +42,11 @@ logging:
   level:
     # DEBUG es útil en desarrollo; en el clúster genera demasiado log.
     com.charmeetchic: INFO
+  # Logs estructurados (Spring Boot 3.4+): cada línea de stdout es un JSON en formato ECS (Elastic Common
+  # Schema) con @timestamp, log.level, log.logger, message, service.name, process.thread.name, el stack trace
+  # como campo y las claves del MDC, entre ellas traceId y spanId (Micrometer Tracing). Grafana Alloy lee
+  # stdout de los pods y lo envía a Loki, que puede filtrar por campo (| json | log_level="ERROR").
+  # En desarrollo se mantiene el formato de texto, más legible en la consola.
+  structured:
+    format:
+      console: ecs

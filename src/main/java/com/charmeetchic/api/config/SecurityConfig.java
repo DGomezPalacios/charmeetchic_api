@@ -35,6 +35,7 @@ import org.springframework.web.servlet.HandlerExceptionResolver;
  * <p>Matriz de acceso (el orden importa: gana la primera regla que coincide):
  * <pre>
  *   público   GET  /health, /products, /products/{id}, /products/search, /categories, /categories/{id}
+ *   público   GET  /actuator/health, /actuator/prometheus   (solo esas dos rutas de Actuator)
  *   ADMIN     GET  /products/low-stock
  *   ADMIN     POST/PUT/DELETE /products/**, /categories/**
  *   ADMIN     PUT  /orders/{id}/status;   ADMIN  /reports/**;   ADMIN  /streaming/**
@@ -109,6 +110,12 @@ public class SecurityConfig {
                     }
 
                     auth.requestMatchers(path(HttpMethod.GET, "/health")).permitAll();
+
+                    // Observabilidad: Prometheus (ServiceMonitor) lee las métricas y Kubernetes/monitoreo la
+                    // salud sin token. Solo estas dos rutas EXACTAS y solo GET; el resto de /actuator/** cae en
+                    // anyRequest().authenticated() (y además no se expone, ver management.* en application.yml).
+                    auth.requestMatchers(path(HttpMethod.GET, "/actuator/health")).permitAll();
+                    auth.requestMatchers(path(HttpMethod.GET, "/actuator/prometheus")).permitAll();
 
                     // Catálogo: lectura pública, escritura ADMIN. low-stock va ANTES de la regla pública.
                     auth.requestMatchers(path(HttpMethod.GET, "/products/low-stock")).hasRole(ADMIN);
