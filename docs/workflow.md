@@ -66,8 +66,10 @@ Secuencia real de versiones:
 
 ## Pipeline de CI/CD
 
-El workflow [`ci.yml`](../.github/workflows/ci.yml) tiene seis jobs. Los cuatro primeros validan (corren también en
-los PRs); `publish-image` y `deploy` entregan (solo corren en push, después de que la validación terminó en verde).
+El workflow [`ci.yml`](../.github/workflows/ci.yml) valida en `gitflow-guard`, `build-and-test`, `sonarcloud`,
+`docker-build`, `k8s-validate` y `compliance-audit` (corren también en los PRs) y entrega en `publish-image`, `deploy`
+(kind) y `deploy-aks` (AKS), que solo corren en push, después de que la validación terminó en verde. Los jobs
+`rabbit-admin`, `gateway` y `kafka-admin` compilan y prueban los microservicios en paralelo.
 
 ```mermaid
 flowchart TD
@@ -82,7 +84,8 @@ flowchart TD
         BT["build-and-test<br/>mvn test · mvn verify (integración + JaCoCo)<br/>smoke test del JAR · Job Summary · artefactos"]
         BT --> SC["sonarcloud<br/>análisis + quality gate<br/>(no corre en tags)"]
         BT --> DB["docker-build<br/>metadata-action (labels OCI) · build local<br/>Trivy SARIF/tabla · contenedor healthy · gate CRITICAL"]
-        BT --> KV["k8s-validate<br/>kustomize build dev y prod<br/>kubeconform -strict (K8s 1.35.8)"]
+        BT --> KV["k8s-validate<br/>kustomize build dev, prod, aks y observability<br/>kubeconform -strict (K8s 1.35.8 + CRDs)"]
+        BT --> CA["compliance-audit<br/>conftest verify · políticas OPA/Rego<br/>(manifiestos, charts, workflow, repo)<br/>reporte Job Summary + JSON"]
     end
 
     subgraph ENTREGA["Entrega (solo push)"]
@@ -92,12 +95,14 @@ flowchart TD
 
     BT & DB --> PI
     PI & KV --> DE
+    PI & CA & KV & SC --> DA["deploy-aks (solo main)<br/>helm upgrade --install monitoreo · overlay aks sha-commit<br/>rollout · smoke test · target UP en Prometheus<br/>métricas al Pushgateway (port-forward)"]
 
     DE -->|"develop"| STG["Environment staging<br/>overlay dev"]
-    DE -->|"main"| PRD["Environment production<br/>overlay prod"]
-    STG & PRD --> GD["GitHub Deployments<br/>(historial por entorno)"]
+    DE -->|"main"| PRD["Environment production<br/>overlay prod (kind)"]
+    DA --> AKS["Environment production<br/>AKS · overlay aks"]
+    STG & PRD & AKS --> GD["GitHub Deployments<br/>(historial por entorno)"]
 
-    SC & DB & KV --> CK{"¿Checks requeridos OK<br/>y conversaciones resueltas?"}
+    SC & DB & KV & CA --> CK{"¿Checks requeridos OK<br/>y conversaciones resueltas?"}
     CK -->|"sí (PR)"| MG["Merge permitido"]
     CK -->|no| BL["Merge bloqueado"]
 ```
@@ -111,10 +116,16 @@ flowchart TD
 | `docker-build` | ✅ | ✅ | ✅ | ✅ |
 | `k8s-validate` | ✅ | ✅ | ✅ | ✅ |
 | `publish-image` | — | ✅ tags `sha-…`, `develop` | ✅ tags `sha-…`, `main` | ✅ tags `sha-…`, `X.Y.Z`, `X.Y` |
+| `compliance-audit` | ✅ | ✅ | ✅ | ✅ |
 | `deploy` | — | ✅ **staging** (overlay dev) | ✅ **production** (overlay prod) | — |
+| `deploy-aks` | — | — | ✅ **production** en AKS (overlay aks) | — |
+| `rabbit-admin`, `gateway`, `kafka-admin` | ✅ | ✅ | ✅ | ✅ |
 
 - Un **tag** no despliega: el commit etiquetado ya se desplegó en production cuando llegó a `main`; el tag solo agrega
   los nombres de versión `X.Y.Z` y `X.Y` a la imagen.
+- **`compliance-audit` es check requerido** en `main` y `develop`; **`deploy-aks` no** (solo corre en el push a
+  `main`). `deploy` y `deploy-aks` usan el mismo environment `production`: si tiene *Required reviewers*, cada uno
+  espera su aprobación.
 - **`publish-image` y `deploy` NO son checks requeridos** de la protección de ramas: no corren en los PRs (un PR no
   debe publicar artefactos ni desplegar, y un PR desde un fork no tendría permiso para escribir en el registro). Si
   se marcaran como requeridos, ningún PR podría mergearse, porque el check nunca aparecería. Corren después del merge,
@@ -170,16 +181,17 @@ flowchart LR
 
 ## Steps de `.github/workflows/ci.yml`
 
-El workflow tiene seis jobs que corren en `ubuntu-latest`. Configuración común a todos:
+Todos los jobs corren en `ubuntu-latest`. Configuración común:
 
 - **`permissions: contents: read`** a nivel global: el `GITHUB_TOKEN` solo puede leer el código. Cada job que
   necesita más lo pide en su propio bloque: `docker-build` (`security-events: write`, para el SARIF de Trivy),
   `publish-image` (`packages: write`, `id-token: write`, `attestations: write`) y `deploy` (`packages: read`).
 - **`concurrency`** por PR (o por rama/tag en los push); `cancel-in-progress` solo en los PRs.
-- **`timeout-minutes`** en cada job (20; 10 en `k8s-validate`; 30 en `deploy`), para cortar un job colgado.
+- **`timeout-minutes`** en cada job (20; 10 en `k8s-validate`; 15 en `compliance-audit`; 30 en `deploy`; 45 en
+  `deploy-aks`), para cortar un job colgado.
 - Las actions de terceros (`docker/*`, `aquasecurity/*`) están fijadas por el SHA completo del commit, con la versión
   en un comentario; Dependabot las actualiza. Las oficiales de GitHub (`actions/*`, `github/*`) usan tag de versión.
-  Las herramientas que se descargan (kustomize, kubeconform, kind, kubectl) tienen versión fija y se verifican con
+  Las herramientas que se descargan (kustomize, kubeconform, kind, kubectl, conftest, helm) tienen versión fija y se verifican con
   su SHA-256 antes de usarse.
 - Ningún secreto se escribe en el repositorio: el registro usa el `GITHUB_TOKEN` del workflow y las contraseñas del
   despliegue se generan en el runner.
@@ -279,3 +291,45 @@ o `production`). Detalle en [kubernetes.md](kubernetes.md#despliegue-automático
    anterior si se reinició).
 10. **Job Summary** (`if: always()`): entorno, commit, imagen y digest, pods con su nodo, anotaciones de trazabilidad,
     `kubectl rollout history` y el resultado del smoke test.
+
+Job `compliance-audit` (`needs: build-and-test`; en PRs y pushes; check requerido). Detalle de las políticas en
+[observabilidad.md](observabilidad.md#políticas-de-cumplimiento).
+
+1. **Instalar conftest, kustomize y helm** en versiones fijas (conftest `0.71.1`, kustomize `v5.8.3`, helm `v3.22.1`)
+   verificadas por SHA-256.
+2. **Tests de las políticas** (`conftest verify`): los `*_test.rego` de `policy/` (41 casos, uno que cumple y uno que
+   no por regla). Si una política deja de detectar lo que debe, el job falla aquí.
+3. **Auditoría** (`policy/scripts/compliance-audit.sh`): renderiza los overlays `dev`, `prod` y `aks`,
+   `k8s/observability`, el pod del smoke test y los charts del monitoreo (`helm template` con nuestros values y las
+   versiones de `k8s/observability/versions.env`); genera el input del repositorio (`.trivyignore` y `git ls-files`) y
+   evalúa los paquetes `kubernetes`, `workflow` y `repo`. Sale con error ante cualquier incumplimiento.
+4. **Job Summary** (`if: always()`): reporte en Markdown con el resultado por objetivo, los incumplimientos con su
+   control normativo, las advertencias, las excepciones vigentes y el catálogo de controles.
+5. **Artefacto `reporte-cumplimiento`** (`if: always()`): `compliance-report.json` y los manifiestos evaluados.
+
+Job `deploy-aks` (`needs: [build-and-test, publish-image, compliance-audit, k8s-validate, sonarcloud]`; solo en push a
+`main`; GitHub Environment `production`). Detalle en [observabilidad.md](observabilidad.md#puesta-en-marcha-en-aks).
+
+1. **Instalar kubectl, kustomize y helm** en versiones fijas, verificadas por SHA-256.
+2. **Acceso al clúster**: el secret `KUBE_CONFIG_AKS` (base64 del kubeconfig) se decodifica a un archivo con permisos
+   600 en `RUNNER_TEMP`; nunca se imprime. Si falta, el job falla con un mensaje que explica cómo cargarlo.
+3. **Stack de monitoreo** con `helm upgrade --install` (idempotente) de kube-prometheus-stack, Loki, Alloy y
+   Pushgateway, y `kubectl apply -k k8s/observability`. El Secret `grafana-admin` se genera en el runner solo si no
+   existe.
+4. **Secret de PostgreSQL** generado en el runner solo si no existe (PostgreSQL fija la contraseña en el primer
+   arranque; una nueva en cada despliegue dejaría a la API sin acceso).
+5. **Fijar imagen y trazabilidad** en el overlay `aks` (igual que `deploy`): tag `sha-<commit>`, change-cause,
+   commit, digest y ejecución. La imagen es pública: los nodos la descargan de GHCR sin credenciales.
+6. **`kubectl apply -k`**, **rollout status** y **smoke test** dentro del clúster. La duración del despliegue se mide
+   desde el apply hasta que pasa el smoke test.
+7. **Verificar que Prometheus lee la API**: por port-forward consulta `sum(up{job="charmeetchic-api"})`; falla si
+   ningún target está UP en 2 minutos.
+8. **Métricas al Pushgateway** (`scripts/ci/push-deploy-metrics.sh`, por port-forward): duración, timestamp,
+   cobertura de líneas y ramas y tests (outputs de `build-and-test`), y `charmeetchic_deploy_info{commit, image,
+   run_id}`.
+9. **Diagnóstico** (`if: failure()`) y **Job Summary** (`if: always()`) con duración, cobertura, tests, targets UP,
+   pods, rollout history, smoke test y `helm list`.
+
+Además, `build-and-test` expone como **outputs** `coverage-lines`, `coverage-branches` (desde `jacoco.csv`) y
+`tests-total` (suma de los `TEST-*.xml` de surefire y failsafe), y `k8s-validate` valida también el overlay `aks` y
+`k8s/observability` (los ServiceMonitor y PrometheusRule contra el catálogo de esquemas de CRDs fijado por commit).

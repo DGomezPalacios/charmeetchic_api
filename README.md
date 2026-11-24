@@ -14,7 +14,8 @@ crecer hacia un ecommerce (carrito, checkout, pagos).
 - **Base de datos:** H2 en memoria (desarrollo y tests) · PostgreSQL (perfil `prod` en Azure/Codespaces y `k8s` en Kubernetes)
 - **Contenedores y despliegue:** Docker (imagen multi-etapa publicada en GHCR) · docker-compose de producción ·
   Kubernetes con Kustomize · kind
-- **CI/CD:** GitHub Actions · JaCoCo · SonarCloud · Trivy · Dependabot
+- **CI/CD:** GitHub Actions · JaCoCo · SonarCloud · Trivy · Dependabot · conftest (OPA/Rego) · despliegue en AKS
+- **Observabilidad:** Actuator + Micrometer · Prometheus · Grafana · Alertmanager · Loki + Grafana Alloy · Pushgateway
 - **Autenticación:** **Firebase Authentication**. La API valida los *ID tokens* de Firebase (firma RS256 con las claves
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
@@ -34,6 +35,8 @@ siguiendo GitFlow con PR obligatorios y CI/CD en GitHub Actions. El pipeline com
   evento.
 - [docs/kubernetes.md](docs/kubernetes.md): arquitectura en Kubernetes, despliegue en kind paso a paso, despliegue
   automático y justificación de los parámetros.
+- [docs/observabilidad.md](docs/observabilidad.md): métricas, logs, alertas, dashboard, políticas de cumplimiento y
+  despliegue en AKS (Evaluación 3).
 
 ---
 
@@ -1175,6 +1178,25 @@ Para que el HPA lea la CPU hace falta metrics-server (paso 2 de
 
 ---
 
+## Observabilidad y cumplimiento (Evaluación 3)
+
+La API expone métricas para Prometheus (`/api/actuator/prometheus`, histograma de latencia HTTP y etiqueta
+`application=charmeetchic-api`) y escribe logs JSON con `traceId` en Kubernetes. En AKS corre un stack de monitoreo con
+versiones fijas (`k8s/observability/`): Prometheus, Alertmanager, Grafana con un dashboard versionado, Loki + Grafana
+Alloy para los logs y un Pushgateway donde el pipeline publica la duración de cada despliegue, la cobertura, los tests
+y el commit desplegado. Hay alertas de API caída, errores 5xx, latencia p95, memoria y reinicios.
+
+El job `compliance-audit` evalúa políticas OPA/Rego con conftest (contenedores no root, sin privilegios, raíz de solo
+lectura, `drop ALL`, recursos, probes, imágenes sin `latest`, trazabilidad, permisos del workflow, `.trivyignore` y
+credenciales versionadas). Cada política está asociada a un control del CIS Kubernetes Benchmark, NIST SSDF SP 800-218,
+OWASP ASVS o ISO/IEC 27001:2022, y el job bloquea el pipeline ante cualquier incumplimiento. El job `deploy-aks`
+despliega en Azure Kubernetes Service (overlay `aks`) en cada push a `main`.
+
+Detalle completo (arquitectura, tabla métrica → decisión, políticas, gates del pipeline con evidencia de los PRs #14 y
+#30, acceso a Grafana y Prometheus, y cómo apagar el clúster): [docs/observabilidad.md](docs/observabilidad.md).
+
+---
+
 ## Justificación del modelo de ramificación
 
 Cuando integré las dos ramas feature dentro de `develop`, la rama `main` no sufrió ningún cambio. En una tienda real como Charme et Chic esto es fundamental: `main` representa lo que los clientes están usando para comprar en tiempo real, por lo que no podemos arriesgar la estabilidad de la producción mientras desarrollamos el carrito o la pasarela de pagos. Aunque existen alternativas como GitHub Flow, este modelo envía cada integración directamente a `main`, careciendo de una capa de aislamiento como `develop` para acumular funcionalidades grandes antes de lanzarlas. Por otro lado, Trunk-Based Development exige una alta madurez técnica y el uso intensivo de feature flags (conmutadores de código) para ocultar cambios incompletos en producción, algo inviable sin un equipo dedicado. En nuestro contexto colaborativo en la nube, la combinación de GitHub y GitHub Actions es el eje del flujo: GitHub centraliza el código y gestiona los Pull Requests con reglas de protección, mientras que Actions ejecuta automáticamente el workflow con los steps de `mvn -B verify` (que compila, ejecuta la suite de pruebas unitarias e integración —incluidas `FirebaseAuthIntegrationTest` y `ApiIntegrationTest` con H2— y empaqueta el JAR) seguido del smoke test al endpoint `/api/health` antes de autorizar la fusión.
@@ -1272,3 +1294,16 @@ En el desarrollo de esta segunda evaluación se utilizaron herramientas de intel
 - Anthropic. (2026). *Claude* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://claude.ai
 - Anthropic. (2026). *Claude Code* (versión consultada en noviembre de 2026) [Herramienta de asistencia de programación con IA]. https://claude.com/claude-code
 - Google. (2026). *Gemini* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://gemini.google.com
+---
+
+## Conclusiones (Evaluación 3)
+
+<!-- A completar por la autora -->
+
+## Reflexión personal (Evaluación 3)
+
+<!-- A completar por la autora -->
+
+## Declaración de uso de IA (Evaluación 3)
+
+<!-- A completar por la autora -->
