@@ -1,0 +1,43 @@
+# -----------------------------------------------------------------------------
+# Overlay AKS: el entorno "production" REAL del job deploy-aks (Azure Kubernetes Service, 1 nodo de 2 vCPU y
+# 8 GB). Hereda k8s/base y es el overlay prod con los recursos ajustados.
+#
+# Por qué no se usa el overlay prod tal cual: prod reserva 3 réplicas x 500m de CPU + PostgreSQL 500m = 2 vCPU
+# de REQUESTS, es decir, el nodo entero. En un nodo de 2 vCPU, AKS deja ~1,9 vCPU asignables y sus propios pods
+# de sistema (CoreDNS, metrics-server, CSI de discos, red) ya reservan ~0,7 vCPU; además corre el stack de
+# monitoreo (~0,4 vCPU y ~1,5 GB de requests). Con prod, los pods de la API quedarían Pending para siempre.
+# Este overlay mantiene la misma imagen, seguridad, probes y configuración que prod (JWT_MODE=firebase) y solo
+# baja réplicas y requests. Detalle del presupuesto en docs/observabilidad.md ("Overlay aks").
+#
+#   kubectl apply -k k8s/overlays/aks
+#
+# El job deploy-aks fija aquí, solo dentro del runner, el tag inmutable sha-<commit> y las anotaciones de
+# trazabilidad (igual que deploy con prod/dev). El tag de abajo es el valor por defecto de un despliegue manual.
+# -----------------------------------------------------------------------------
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# Imagen pública de GHCR: los nodos de AKS la descargan sin imagePullSecret.
+images:
+  - name: charmeetchic-api
+    newName: ghcr.io/dgomezpalacios/charmeetchic-api
+    newTag: 0.0.1-SNAPSHOT
+
+patches:
+  - path: patch-api-aks.yaml
+  - path: patch-postgres-aks.yaml
+  # HPA: 2 réplicas mínimo (alta disponibilidad básica: un rolling update o la caída de un pod no deja la API en
+  # cero) y 3 como techo, que es lo que cabe en el nodo junto al monitoreo.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: charmeetchic-api
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 3
