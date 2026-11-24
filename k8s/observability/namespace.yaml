@@ -1,0 +1,14 @@
+# Namespace del stack de monitoreo (Prometheus, Grafana, Alertmanager, Loki, Alloy, Pushgateway).
+# Pod Security "enforce: privileged" (no "restricted" como charmeetchic): node-exporter necesita hostNetwork,
+# hostPID y montar /proc y /sys del nodo (hostPath) para medir CPU, memoria y disco, algo que prohíben tanto
+# "baseline" como "restricted". Es la ÚNICA excepción y está acotada a este namespace; warn/audit en restricted
+# dejan registrado qué componentes de terceros no cumplen el nivel más estricto.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

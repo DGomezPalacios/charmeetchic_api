@@ -1,0 +1,17 @@
+[
+  {"regla": "K8S-01", "descripcion": "Contenedores no root (runAsNonRoot: true, runAsUser != 0)", "control": "CIS Kubernetes Benchmark 5.2.6", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un workload que pueda correr como root"},
+  {"regla": "K8S-02", "descripcion": "Sin contenedores privileged", "control": "CIS Kubernetes Benchmark 5.2.2", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un contenedor con acceso total al nodo"},
+  {"regla": "K8S-03", "descripcion": "allowPrivilegeEscalation: false explícito", "control": "CIS Kubernetes Benchmark 5.2.5", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un proceso que pueda ganar más privilegios (setuid)"},
+  {"regla": "K8S-04", "descripcion": "readOnlyRootFilesystem: true", "control": "CIS Kubernetes Benchmark 5.7.3", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un contenedor cuyo sistema de archivos se pueda modificar"},
+  {"regla": "K8S-05", "descripcion": "capabilities.drop: [ALL]", "control": "CIS Kubernetes Benchmark 5.2.9", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un contenedor que conserve capabilities de Linux"},
+  {"regla": "K8S-06", "descripcion": "requests y limits de CPU y memoria", "control": "ISO/IEC 27001:2022 A.8.6", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un contenedor sin capacidad planificada (puede agotar el nodo)"},
+  {"regla": "K8S-07", "descripcion": "livenessProbe y readinessProbe en workloads de larga duración", "control": "ISO/IEC 27001:2022 A.8.16", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un servicio sin monitoreo de salud (no se reinicia ni sale del balanceo)"},
+  {"regla": "K8S-08", "descripcion": "Imágenes con tag fijo o digest (nunca latest ni sin tag)", "control": "NIST SSDF SP 800-218 PW.4.1", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Una imagen no reproducible ni rastreable"},
+  {"regla": "K8S-09", "descripcion": "Sin hostNetwork, hostPID ni hostIPC", "control": "CIS Kubernetes Benchmark 5.2.3-5.2.4", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un pod que comparta la red o los procesos del nodo"},
+  {"regla": "K8S-10", "descripcion": "Labels de trazabilidad (name + part-of, o chart + release en Helm)", "control": "ISO/IEC 27001:2022 A.5.9", "objetivo": "Manifiestos de Kubernetes", "bloquea": "Un recurso que no se puede atribuir a una app, chart o release"},
+  {"regla": "GHA-01", "descripcion": "permissions definidos a nivel raíz del workflow, solo lectura", "control": "NIST SSDF SP 800-218 PO.5.1", "objetivo": ".github/workflows/*.yml", "bloquea": "Un GITHUB_TOKEN con permisos de escritura por defecto"},
+  {"regla": "GHA-02", "descripcion": "Actions de terceros fijadas por SHA de commit", "control": "NIST SSDF SP 800-218 PW.4.1", "objetivo": ".github/workflows/*.yml", "bloquea": "Una action de terceros referenciada por un tag movible"},
+  {"regla": "REPO-01", "descripcion": "Cada entrada de .trivyignore con exp: y justificación", "control": "NIST SSDF SP 800-218 RV.2.2", "objetivo": ".trivyignore", "bloquea": "Un riesgo aceptado sin vencimiento ni motivo"},
+  {"regla": "REPO-02", "descripcion": "Sin archivos de credenciales versionados (*.pem, *-admin-key*.json, .env)", "control": "OWASP ASVS 4.0.3 V2.10.4", "objetivo": "git ls-files", "bloquea": "Una credencial en el repositorio"},
+  {"regla": "REPO-03", "descripcion": "Excepciones de políticas con justificación y vencimiento <= 1 año", "control": "ISO/IEC 27001:2022 A.5.36", "objetivo": "policy/data/exceptions.yaml", "bloquea": "Una excepción permanente o sin justificar"}
+]

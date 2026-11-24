@@ -1,0 +1,103 @@
+# -----------------------------------------------------------------------------
+# Alertas de la API (CRD PrometheusRule). Prometheus las evalúa cada 30 s y Alertmanager las agrupa/notifica.
+# Cada alerta responde a una pregunta y gatilla una decisión (tabla en docs/observabilidad.md):
+#   critical -> la API no atiende o atiende mal: actuar ya (rollback, escalar, revisar logs).
+#   warning  -> degradación: investigar antes de que se convierta en caída.
+# Las consultas excluyen /actuator/** (el scrape de Prometheus) para medir solo tráfico real.
+# -----------------------------------------------------------------------------
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: charmeetchic-api
+  labels:
+    app.kubernetes.io/name: charmeetchic-api
+    app.kubernetes.io/component: monitoring
+spec:
+  groups:
+    - name: charmeetchic-api.disponibilidad
+      rules:
+        # Prometheus no logra leer las métricas de una réplica (pod caído, colgado o sin red).
+        - alert: CharmeetchicApiTargetDown
+          expr: up{job="charmeetchic-api", namespace="charmeetchic"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Réplica de la API sin responder ({{ $labels.pod }})"
+            description: "Prometheus no puede leer /api/actuator/prometheus del pod {{ $labels.pod }} hace 2 minutos."
+            runbook_url: "https://github.com/DGomezPalacios/charmeetchic_api/blob/develop/docs/observabilidad.md#alertas"
+        # Ninguna réplica disponible: la API está CAÍDA para los clientes.
+        - alert: CharmeetchicApiSinReplicas
+          expr: |
+            kube_deployment_status_replicas_available{namespace="charmeetchic", deployment="charmeetchic-api"} == 0
+            or
+            absent(up{job="charmeetchic-api", namespace="charmeetchic"} == 1)
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API caída: 0 réplicas disponibles"
+            description: "El Deployment charmeetchic-api no tiene réplicas disponibles (o ningún target está UP). Revisar el último despliegue y hacer rollback (kubectl rollout undo)."
+            runbook_url: "https://github.com/DGomezPalacios/charmeetchic_api/blob/develop/docs/observabilidad.md#alertas"
+
+    - name: charmeetchic-api.trafico
+      rules:
+        # Más del 5 % de las respuestas son 5xx durante 5 minutos (con tráfico mínimo de 0,1 req/s, para no
+        # alertar por un único error a las 3 AM).
+        - alert: CharmeetchicApiErrores5xxAltos
+          expr: |
+            (
+              sum(rate(http_server_requests_seconds_count{application="charmeetchic-api", status=~"5..", uri!~"/actuator.*"}[5m]))
+              /
+              sum(rate(http_server_requests_seconds_count{application="charmeetchic-api", uri!~"/actuator.*"}[5m]))
+            ) > 0.05
+            and
+            sum(rate(http_server_requests_seconds_count{application="charmeetchic-api", uri!~"/actuator.*"}[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Tasa de errores 5xx de la API sobre el 5 %"
+            description: "{{ $value | humanizePercentage }} de errores 5xx. Si coincide con un despliegue, hacer rollback; si no, revisar los logs de error en Grafana (Loki)."
+            runbook_url: "https://github.com/DGomezPalacios/charmeetchic_api/blob/develop/docs/observabilidad.md#alertas"
+        # Latencia p95 (todas las réplicas) sobre 300 ms durante 10 minutos.
+        - alert: CharmeetchicApiLatenciaP95Alta
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(http_server_requests_seconds_bucket{application="charmeetchic-api", uri!~"/actuator.*"}[5m]))
+            ) > 0.3
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latencia p95 de la API sobre 300 ms"
+            description: "p95 = {{ $value | humanizeDuration }}. Revisar CPU de los pods (¿el HPA escaló?) y la base de datos."
+            runbook_url: "https://github.com/DGomezPalacios/charmeetchic_api/blob/develop/docs/observabilidad.md#alertas"
+
+    - name: charmeetchic-api.recursos
+      rules:
+        # Memoria de un contenedor sobre el 90 % de su límite: cerca de un OOMKilled.
+        - alert: CharmeetchicPodMemoriaCercaDelLimite
+          expr: |
+            max by (namespace, pod, container) (container_memory_working_set_bytes{namespace="charmeetchic", container!="", container!="POD"})
+            /
+            on (namespace, pod, container)
+            max by (namespace, pod, container) (kube_pod_container_resource_limits{namespace="charmeetchic", resource="memory"})
+            > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }}/{{ $labels.container }} usa más del 90 % de su límite de memoria"
+            description: "Uso = {{ $value | humanizePercentage }} del límite. Riesgo de OOMKilled: subir el límite o revisar una fuga de memoria."
+            runbook_url: "https://github.com/DGomezPalacios/charmeetchic_api/blob/develop/docs/observabilidad.md#alertas"
+        # Reinicios de contenedores: CrashLoopBackOff, OOMKilled o liveness fallando.
+        - alert: CharmeetchicPodReiniciando
+          expr: increase(kube_pod_container_status_restarts_total{namespace="charmeetchic"}[15m]) > 2
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.pod }} se reinició más de 2 veces en 15 minutos"
+            description: "Ver el motivo con kubectl -n charmeetchic describe pod {{ $labels.pod }} (Last State) y los logs del contenedor anterior."
+            runbook_url: "https://github.com/DGomezPalacios/charmeetchic_api/blob/develop/docs/observabilidad.md#alertas"

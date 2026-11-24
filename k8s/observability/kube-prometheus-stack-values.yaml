@@ -1,0 +1,185 @@
+# -----------------------------------------------------------------------------
+# Values de kube-prometheus-stack (chart prometheus-community/kube-prometheus-stack, VERSIÓN FIJA en
+# k8s/observability/versions.env). Instala Prometheus Operator, Prometheus, Alertmanager, Grafana,
+# node-exporter y kube-state-metrics en el namespace "monitoring".
+#
+# Dimensionado para un clúster AKS de UN nodo de 2 vCPU y 8 GB que además corre la API (overlay aks) y
+# PostgreSQL: requests chicos, límites acotados y retención corta (es un entorno académico, no un SOC).
+#
+#   helm upgrade --install kps prometheus-community/kube-prometheus-stack --version "$KPS_VERSION" \
+#     -n monitoring -f k8s/observability/kube-prometheus-stack-values.yaml
+#
+# (El job deploy-aks del CI lo hace solo; ver docs/observabilidad.md.)
+# -----------------------------------------------------------------------------
+
+# Nombre corto y estable de los recursos (kps-prometheus, kps-grafana...), independiente del release.
+fullnameOverride: kps
+
+# Labels de trazabilidad en todos los recursos del chart (las exige la política de conftest).
+commonLabels:
+  app.kubernetes.io/part-of: charmeetchic-observability
+
+# AKS es un Kubernetes ADMINISTRADO: etcd, kube-scheduler, kube-controller-manager y kube-proxy no son
+# accesibles desde el clúster. Sus ServiceMonitor solo producirían targets DOWN y alertas falsas.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+windowsMonitoring:
+  enabled: false
+
+# Reglas por defecto del chart: se dejan las útiles para un nodo único y se apagan las del plano de control
+# administrado (mismo motivo de arriba).
+defaultRules:
+  create: true
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeProxy: false
+    windows: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+  # El webhook de admisión valida los PrometheusRule al aplicarlos (un PromQL roto se rechaza).
+  admissionWebhooks:
+    patch:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+  prometheusConfigReloader:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+
+prometheus:
+  prometheusSpec:
+    # Retención corta: 3 días o 4 GB (lo que llegue primero). Suficiente para la demo y para ver tendencias
+    # de varios despliegues sin llenar el disco del nodo.
+    retention: 3d
+    retentionSize: 4GB
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    # Lee los ServiceMonitor / PodMonitor / PrometheusRule de CUALQUIER namespace y sin exigir la label
+    # "release" del chart: así el ServiceMonitor de la API (namespace charmeetchic) y el del Pushgateway se
+    # descubren sin acoplarlos al nombre del release de Helm.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 150m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    # Volumen persistente (disco administrado de Azure con la StorageClass por defecto): las métricas
+    # sobreviven a un reinicio del pod. 8Gi > retentionSize 4GB + WAL.
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 8Gi
+
+alertmanager:
+  alertmanagerSpec:
+    retention: 72h
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+grafana:
+  # La contraseña de admin NO está aquí: viene del Secret grafana-admin, que el job deploy-aks genera en el
+  # runner (openssl rand) antes del helm upgrade y nunca se imprime ni se versiona.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  # Sin el pod de prueba de Helm (helm test): no se usa y no define recursos.
+  testFramework:
+    enabled: false
+  # Zona horaria de Chile en los dashboards.
+  defaultDashboardsTimezone: America/Santiago
+  persistence:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+  # El sidecar busca ConfigMaps con la label grafana_dashboard=1 en TODOS los namespaces y los carga como
+  # dashboards: así el dashboard de la API vive versionado en el repositorio (k8s/observability/dashboards).
+  sidecar:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+  # Loki como datasource (además de Prometheus y Alertmanager, que agrega el chart). uid fijo: el dashboard
+  # versionado lo referencia por ese uid.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      jsonData:
+        maxLines: 1000
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 48Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi

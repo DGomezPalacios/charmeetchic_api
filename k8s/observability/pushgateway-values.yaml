@@ -1,0 +1,52 @@
+# -----------------------------------------------------------------------------
+# Values de Prometheus Pushgateway (chart prometheus-community/prometheus-pushgateway, VERSIÓN FIJA en
+# k8s/observability/versions.env).
+#
+# Para qué: un job del pipeline vive minutos y Prometheus no alcanza a "scrapearlo". Al terminar el despliegue,
+# el job deploy-aks EMPUJA sus métricas (duración, cobertura, tests, commit, timestamp) al Pushgateway, y
+# Prometheus las lee desde ahí como de cualquier otro target.
+#
+# Seguridad: Service ClusterIP (sin LoadBalancer ni Ingress): NO está expuesto a internet. El runner llega a él
+# con `kubectl port-forward` usando el kubeconfig del secret KUBE_CONFIG_AKS.
+# -----------------------------------------------------------------------------
+fullnameOverride: pushgateway
+
+commonLabels:
+  app.kubernetes.io/part-of: charmeetchic-observability
+
+service:
+  type: ClusterIP
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 24Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+# Las métricas empujadas se guardan en disco: sobreviven a un reinicio del pod (si no, el dashboard perdería el
+# último despliegue hasta el siguiente push).
+persistentVolume:
+  enabled: true
+  size: 1Gi
+
+# ServiceMonitor para que Prometheus (kube-prometheus-stack) lo lea. honorLabels: respeta las labels que
+# empuja el pipeline (job, environment, commit) en vez de reemplazarlas por las del target.
+serviceMonitor:
+  enabled: true
+  honorLabels: true
+  additionalLabels:
+    app.kubernetes.io/part-of: charmeetchic-observability
+
+# Mismo endurecimiento que la API (políticas K8S-03/04/05): sin escalada de privilegios, raíz de solo lectura
+# (escribe solo en su volumen persistente) y sin capabilities.
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault

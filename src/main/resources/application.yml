@@ -80,6 +80,51 @@ logging:
     com.charmeetchic: DEBUG
 
 # ---------------------------------------------------------------------------
+# Observabilidad (Evaluación 3): Actuator + Micrometer + Prometheus.
+# Igual en desarrollo y en Kubernetes (perfil k8s), para que lo que se prueba en local sea lo que corre.
+# Las rutas cuelgan del context-path: GET /api/actuator/health y GET /api/actuator/prometheus. Son las
+# ÚNICAS rutas de Actuator sin token (SecurityConfig); cualquier otro endpoint no se expone por HTTP.
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Lista blanca: solo salud y métricas. env, beans, heapdump, loggers... quedan sin exponer.
+        include: health,prometheus
+  endpoint:
+    health:
+      # Sin detalles (estado de la base, disco, etc.) para un cliente anónimo: solo {"status":"UP"}.
+      show-details: never
+  health:
+    rabbit:
+      # Con la mensajería apagada (Kubernetes, tests) no hay broker: el indicador de RabbitMQ daría DOWN y
+      # /actuator/health respondería 503 aunque la API funcione. Sigue al mismo interruptor que la mensajería.
+      enabled: ${app.messaging.enabled:true}
+  metrics:
+    # Etiqueta común a TODAS las métricas: permite filtrar por aplicación en Prometheus/Grafana aunque
+    # haya otras apps en el mismo clúster (y la usan las alertas de k8s/observability).
+    tags:
+      application: charmeetchic-api
+    distribution:
+      # Histograma de buckets de la latencia HTTP: Prometheus calcula p50/p95/p99 agregando TODAS las
+      # réplicas con histogram_quantile (un percentil calculado en cada pod no se puede promediar).
+      # (No se usan percentiles precalculados en el cliente: con histograma activo, el registro de Prometheus
+      # de Micrometer 1.13+ no los publica, y además no se pueden agregar entre réplicas.)
+      percentiles-histogram:
+        http.server.requests: true
+        # El temporizador de peticiones EN CURSO (http.server.requests.active) hereda la clave anterior por
+        # prefijo; no necesita buckets (serían ~90 series extra por réplica sin uso en el dashboard).
+        http.server.requests.active: false
+      # SLO de latencia: bucket explícito en 300 ms (el umbral de la alerta de p95, ver PrometheusRule).
+      slo:
+        http.server.requests: 300ms
+  tracing:
+    sampling:
+      # Los identificadores de traza se generan siempre (van al log); no hay exportador, así que muestrear
+      # el 100 % no envía nada fuera del pod.
+      probability: 1.0
+
+# ---------------------------------------------------------------------------
 # Configuración propia de la aplicación
 # ---------------------------------------------------------------------------
 app:

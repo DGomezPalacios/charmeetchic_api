@@ -84,6 +84,12 @@ jobs:
     # Una ejecución normal tarda unos pocos minutos; el límite corta un job colgado
     # (por ejemplo, un test bloqueado) antes de los 360 minutos por defecto de GitHub.
     timeout-minutes: 20
+    # Métricas de calidad del commit (step "calidad"): deploy-aks las publica en el Pushgateway y el dashboard
+    # de Grafana las muestra junto al despliegue (cobertura en %, con un decimal; tests = unitarias + integración).
+    outputs:
+      coverage-lines: ${{ steps.calidad.outputs.coverage-lines }}
+      coverage-branches: ${{ steps.calidad.outputs.coverage-branches }}
+      tests-total: ${{ steps.calidad.outputs.tests-total }}
 
     steps:
       # Descarga el código del repositorio en el runner
@@ -186,6 +192,27 @@ jobs:
               echo "No se generó el reporte de cobertura (el job falló antes de la fase verify)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Outputs del job: cobertura de líneas y ramas (mismo cálculo que el resumen, desde jacoco.csv) y total de
+      # tests (atributo tests de los TEST-*.xml de surefire y failsafe). Corre siempre; si el job falló antes de
+      # generar los reportes, los outputs quedan vacíos (y deploy-aks no corre, porque depende de este job).
+      - name: Exportar métricas de calidad (cobertura y tests)
+        id: calidad
+        if: always()
+        run: |
+          CSV=target/site/jacoco/jacoco.csv
+          if [ -f "$CSV" ]; then
+            awk -F, 'NR > 1 { lm += $8; lc += $9; bm += $6; bc += $7 }
+              END {
+                printf "coverage-lines=%.1f\n", 100 * lc / (lc + lm)
+                printf "coverage-branches=%.1f\n", 100 * bc / (bc + bm)
+              }' "$CSV" >> "$GITHUB_OUTPUT"
+          fi
+          total=$(cat target/surefire-reports/TEST-*.xml target/failsafe-reports/TEST-*.xml 2>/dev/null | awk '
+            /<testsuite / { for (i = 1; i <= NF; i++) if ($i ~ /^tests=/) { gsub(/[^0-9]/, "", $i); t += $i } }
+            END { print t + 0 }')
+          echo "tests-total=${total}" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
 
       # Sube los reportes de tests (surefire = unitarias, failsafe = integración), incluso si el job falló
       - name: Subir reportes de tests
@@ -467,8 +494,12 @@ jobs:
           mkdir -p rendered
           kustomize build k8s/overlays/dev  > rendered/dev.yaml
           kustomize build k8s/overlays/prod > rendered/prod.yaml
+          kustomize build k8s/overlays/aks  > rendered/aks.yaml
+          kustomize build k8s/observability > rendered/observability.yaml
           echo "dev:  $(grep -c '^kind:' rendered/dev.yaml) recursos"
           echo "prod: $(grep -c '^kind:' rendered/prod.yaml) recursos"
+          echo "aks:  $(grep -c '^kind:' rendered/aks.yaml) recursos"
+          echo "observability: $(grep -c '^kind:' rendered/observability.yaml) recursos"
 
       # kubeconform valida cada recurso contra el esquema JSON de su kind/apiVersion en Kubernetes $K8S_VERSION.
       #  -strict: rechaza campos que no existen en el esquema (p. ej. "readinesProbe" mal escrito), que
@@ -476,13 +507,93 @@ jobs:
       #  -summary: imprime el total de recursos válidos, inválidos y con error.
       # También se validan el Secret de ejemplo y el pod del smoke test del job deploy, que no forman parte
       # de ningún overlay.
+      # Los recursos de Prometheus Operator (ServiceMonitor, PrometheusRule de k8s/observability) son CRDs sin
+      # esquema en el catálogo oficial: se validan contra el catálogo de CRDs de datreeio fijado a un COMMIT
+      # (no a main), así un campo mal ubicado en un ServiceMonitor también se detecta antes del despliegue.
       - name: Validar manifiestos (kubeconform -strict)
+        env:
+          CRD_SCHEMAS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/04af58d740718c4dc719441bf39fb284c784f4a8/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
         run: |
           kubeconform -v
           kubeconform -strict -summary -output text \
             -kubernetes-version "$K8S_VERSION" \
             -schema-location default \
-            rendered/dev.yaml rendered/prod.yaml k8s/base/postgres-secret.example.yaml k8s/ci/smoke-test-pod.yaml
+            -schema-location "$CRD_SCHEMAS" \
+            rendered/dev.yaml rendered/prod.yaml rendered/aks.yaml rendered/observability.yaml \
+            k8s/base/postgres-secret.example.yaml k8s/ci/smoke-test-pod.yaml
+
+  # Job compliance-audit: auditoría de cumplimiento automatizada con políticas OPA/Rego (conftest). Evalúa los
+  # manifiestos RENDERIZADOS (overlays dev, prod y aks, k8s/observability, el pod del smoke test y los charts de
+  # Helm del monitoreo con nuestros values), el workflow y el repositorio (.trivyignore, credenciales versionadas,
+  # excepciones). Cada regla cita su control normativo (CIS Kubernetes Benchmark, NIST SSDF SP 800-218, OWASP
+  # ASVS, ISO/IEC 27001:2022). Falla ante CUALQUIER incumplimiento; deja el reporte en el Job Summary (markdown)
+  # y como artefacto (JSON). Políticas, tests y catálogo de controles en policy/ (ver docs/observabilidad.md).
+  # Corre en PRs y pushes, en paralelo con docker-build, sonarcloud y k8s-validate.
+  compliance-audit:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Versiones fijas verificadas por SHA-256 (mismo criterio que k8s-validate).
+      CONFTEST_VERSION: 0.71.1
+      CONFTEST_SHA256: c3f6b2a753bd56e377a1e51a95ae3e057f926f2e9139f7d5b5dfbbaf810f7985
+      KUSTOMIZE_VERSION: v5.8.3
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+      HELM_VERSION: v3.22.1
+      HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar conftest, kustomize y helm (versión fija + checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir -p bin
+          curl --proto '=https' --tlsv1.2 -sSfL -o conftest.tar.gz \
+            "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz"
+          echo "${CONFTEST_SHA256}  conftest.tar.gz" | sha256sum -c -
+          curl --proto '=https' --tlsv1.2 -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
+          curl --proto '=https' --tlsv1.2 -sSfL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tar.gz" | sha256sum -c -
+          tar -xzf conftest.tar.gz -C bin conftest
+          tar -xzf kustomize.tar.gz -C bin kustomize
+          tar -xzf helm.tar.gz --strip-components=1 -C bin linux-amd64/helm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # Tests unitarios de las políticas (*_test.rego): cada regla tiene un caso que cumple y uno que no. Si una
+      # política se rompe (deja de detectar lo que debe), el job falla aquí, antes de auditar.
+      - name: Tests de las políticas (conftest verify)
+        run: conftest verify --policy policy --data policy/data --report full
+
+      # Renderiza, evalúa y escribe compliance-report/compliance-report.{json,md}. Sale con 1 si hay algún deny.
+      - name: Auditoría de cumplimiento (conftest test)
+        run: policy/scripts/compliance-audit.sh compliance-report
+
+      - name: Publicar reporte de auditoría en el Job Summary
+        if: always()
+        run: |
+          if [ -f compliance-report/compliance-report.md ]; then
+            cat compliance-report/compliance-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ❌ Auditoría de cumplimiento: no se generó el reporte (falló la instalación o el renderizado)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Subir reporte de auditoría (JSON y manifiestos evaluados)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reporte-cumplimiento
+          path: |
+            compliance-report/compliance-report.json
+            compliance-report/compliance-report.md
+            compliance-report/rendered/
+          if-no-files-found: ignore
 
   # Job publish-image: publica la imagen en GitHub Container Registry (ghcr.io) con trazabilidad completa.
   # Solo en push (develop, main o un tag vX.Y.Z), NUNCA en pull_request: un PR no debe publicar artefactos, y un
@@ -835,6 +946,275 @@ jobs:
             echo
             echo '```'
             cat "$RUNNER_TEMP/smoke-test.log" 2>/dev/null || echo "El smoke test no llegó a ejecutarse."
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Job deploy-aks: despliegue REAL en Azure Kubernetes Service (entorno "production"), solo en push a main.
+  # Requisitos (todos en verde): la imagen publicada (publish-image), la auditoría de cumplimiento
+  # (compliance-audit), los manifiestos validados (k8s-validate) y el quality gate de SonarCloud (sonarcloud).
+  # build-and-test va en needs solo para leer sus outputs (cobertura y tests); ya era requisito de los demás.
+  # Pasos: kubeconfig desde el secret KUBE_CONFIG_AKS -> stack de monitoreo con helm upgrade --install
+  # (idempotente) -> Secrets generados en el runner -> overlay aks con la imagen sha-<commit> y anotaciones de
+  # trazabilidad -> rollout -> smoke test -> Prometheus lee la API -> métricas del despliegue al Pushgateway
+  # (por port-forward: no está expuesto a internet) -> Job Summary.
+  # Overlay aks y no prod: prod no cabe en el nodo de 2 vCPU / 8 GB junto al monitoreo (k8s/overlays/aks).
+  deploy-aks:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, publish-image, compliance-audit, k8s-validate, sonarcloud]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 45
+    # Solo lee el código: la imagen es pública en ghcr.io (los nodos de AKS la descargan sin credenciales) y el
+    # acceso al clúster es el kubeconfig del secret, no el GITHUB_TOKEN.
+    permissions:
+      contents: read
+    environment:
+      name: production
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    env:
+      ENVIRONMENT: production
+      OVERLAY: aks
+      NAMESPACE: charmeetchic
+      IMAGE: ${{ needs.publish-image.outputs.image }}
+      SHA_TAG: ${{ needs.publish-image.outputs.sha-tag }}
+      DIGEST: ${{ needs.publish-image.outputs.digest }}
+      COVERAGE_LINES: ${{ needs.build-and-test.outputs.coverage-lines }}
+      COVERAGE_BRANCHES: ${{ needs.build-and-test.outputs.coverage-branches }}
+      TESTS_TOTAL: ${{ needs.build-and-test.outputs.tests-total }}
+      KUBECTL_VERSION: v1.35.8
+      KUBECTL_SHA256: 874d5e72dbb819f43cff16bcd1e4f8bac5b7f2361fe1e55049b0a6c676fb0cbf
+      KUSTOMIZE_VERSION: v5.8.3
+      KUSTOMIZE_SHA256: cb9e31198d3f63b44848bd0afc4c8efc56e6cfef9c93a4a39a211940e6decd61
+      HELM_VERSION: v3.22.1
+      HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Instalar kubectl, kustomize y helm (versión fija + checksum)
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          mkdir -p bin
+          curl --proto '=https' --tlsv1.2 -sSfL -o bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KUBECTL_SHA256}  bin/kubectl" | sha256sum -c -
+          curl --proto '=https' --tlsv1.2 -sSfL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
+          curl --proto '=https' --tlsv1.2 -sSfL -o helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  helm.tar.gz" | sha256sum -c -
+          tar -xzf kustomize.tar.gz -C bin kustomize
+          tar -xzf helm.tar.gz --strip-components=1 -C bin linux-amd64/helm
+          chmod +x bin/kubectl
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # El secret KUBE_CONFIG_AKS (environment production) es el kubeconfig en base64. Se escribe en un archivo
+      # con permisos 600 dentro de RUNNER_TEMP (se borra con el runner) y nunca se imprime.
+      - name: Configurar acceso al clúster AKS
+        env:
+          KUBE_CONFIG_AKS: ${{ secrets.KUBE_CONFIG_AKS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KUBE_CONFIG_AKS}" ]; then
+            echo "::error title=Falta KUBE_CONFIG_AKS::Carga el secret KUBE_CONFIG_AKS (base64 del kubeconfig) en el environment production. Ver docs/observabilidad.md."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "${KUBE_CONFIG_AKS}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+          KUBECONFIG="$RUNNER_TEMP/kubeconfig" kubectl get nodes -o wide
+
+      - name: Leer la versión de la aplicación
+        run: |
+          APP_VERSION=$(python3 -c "import xml.etree.ElementTree as ET; ns={'m': 'http://maven.apache.org/POM/4.0.0'}; print(ET.parse('pom.xml').getroot().find('m:version', ns).text)")
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+
+      # Stack de observabilidad con versiones fijas (k8s/observability/versions.env). helm upgrade --install es
+      # idempotente: la primera vez instala, después solo aplica lo que cambió (o nada). La contraseña de Grafana
+      # se genera en el runner SOLO si el Secret no existe (no se rota en cada despliegue) y no se imprime.
+      - name: Instalar o actualizar el stack de monitoreo (Helm)
+        run: |
+          set -euo pipefail
+          . k8s/observability/versions.env
+          kubectl apply -f k8s/observability/namespace.yaml
+          if ! kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1; then
+            GRAFANA_PASSWORD="$(openssl rand -base64 24)"
+            echo "::add-mask::${GRAFANA_PASSWORD}"
+            kubectl -n monitoring create secret generic grafana-admin \
+              --from-literal=admin-user=admin --from-literal=admin-password="${GRAFANA_PASSWORD}"
+            echo "Secret grafana-admin creado (contraseña aleatoria, no se muestra)."
+          fi
+          PROM_REPO=https://prometheus-community.github.io/helm-charts
+          GRAFANA_REPO=https://grafana.github.io/helm-charts
+          helm upgrade --install kps kube-prometheus-stack --repo "$PROM_REPO" --version "$KPS_CHART_VERSION" \
+            -n monitoring -f k8s/observability/kube-prometheus-stack-values.yaml --wait --timeout 15m
+          helm upgrade --install loki loki --repo "$GRAFANA_REPO" --version "$LOKI_CHART_VERSION" \
+            -n monitoring -f k8s/observability/loki-values.yaml --wait --timeout 10m
+          helm upgrade --install alloy alloy --repo "$GRAFANA_REPO" --version "$ALLOY_CHART_VERSION" \
+            -n monitoring -f k8s/observability/alloy-values.yaml --wait --timeout 5m
+          helm upgrade --install pushgateway prometheus-pushgateway --repo "$PROM_REPO" --version "$PUSHGATEWAY_CHART_VERSION" \
+            -n monitoring -f k8s/observability/pushgateway-values.yaml --wait --timeout 5m
+          kubectl apply -k k8s/observability
+          helm list -n monitoring
+
+      # Contraseña de PostgreSQL generada en el runner SOLO si el Secret no existe: PostgreSQL la fija en el primer
+      # arranque (initdb) y una contraseña nueva en cada despliegue dejaría a la API sin acceso a la base.
+      - name: Crear el namespace y el Secret de PostgreSQL
+        run: |
+          set -euo pipefail
+          kubectl apply -f k8s/base/namespace.yaml
+          if ! kubectl -n "$NAMESPACE" get secret postgres-credentials >/dev/null 2>&1; then
+            PG_PASSWORD="$(openssl rand -base64 24)"
+            echo "::add-mask::${PG_PASSWORD}"
+            kubectl -n "$NAMESPACE" create secret generic postgres-credentials \
+              --from-literal=POSTGRES_USER=charmeetchic --from-literal=POSTGRES_PASSWORD="${PG_PASSWORD}"
+            echo "Secret postgres-credentials creado (contraseña aleatoria, no se muestra)."
+          else
+            echo "Secret postgres-credentials ya existe: se conserva."
+          fi
+
+      # Igual que el job deploy: imagen por tag inmutable + patch de trazabilidad, solo dentro del runner.
+      - name: Fijar imagen y trazabilidad con kustomize
+        working-directory: k8s/overlays/${{ env.OVERLAY }}
+        run: |
+          set -euo pipefail
+          kustomize edit set image "charmeetchic-api=${IMAGE}:${SHA_TAG}"
+          {
+            echo "apiVersion: apps/v1"
+            echo "kind: Deployment"
+            echo "metadata:"
+            echo "  name: charmeetchic-api"
+            echo "  labels:"
+            echo "    app.kubernetes.io/version: \"${APP_VERSION}\""
+            echo "  annotations:"
+            echo "    kubernetes.io/change-cause: \"Despliegue ${ENVIRONMENT} (AKS) del commit ${GITHUB_SHA} (run ${GITHUB_RUN_NUMBER})\""
+            echo "spec:"
+            echo "  template:"
+            echo "    metadata:"
+            echo "      labels:"
+            echo "        app.kubernetes.io/version: \"${APP_VERSION}\""
+            echo "      annotations:"
+            echo "        charmeetchic.cl/git-commit: \"${GITHUB_SHA}\""
+            echo "        charmeetchic.cl/image-digest: \"${DIGEST}\""
+            echo "        charmeetchic.cl/workflow-run: \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\""
+          } > deploy-trace-patch.yaml
+          kustomize edit add patch --path deploy-trace-patch.yaml
+          kustomize build . > "$RUNNER_TEMP/rendered.yaml"
+          grep -nE 'image: |change-cause|git-commit|image-digest' "$RUNNER_TEMP/rendered.yaml"
+
+      # Duración del despliegue: desde que se aplican los manifiestos de la API hasta que pasa el smoke test.
+      - name: Aplicar manifiestos y esperar el rollout
+        run: |
+          set -euo pipefail
+          echo "DEPLOY_START=$(date +%s)" >> "$GITHUB_ENV"
+          kubectl apply -k "k8s/overlays/${OVERLAY}"
+          kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=300s
+          kubectl -n "$NAMESPACE" rollout status deployment/charmeetchic-api --timeout=600s
+          kubectl -n "$NAMESPACE" get pods -o wide
+
+      - name: Smoke test desde dentro del clúster
+        run: |
+          set -uo pipefail
+          kubectl -n "$NAMESPACE" delete pod smoke-test --ignore-not-found --wait=true
+          sed "s/__EXPECTED_VERSION__/${APP_VERSION}/" k8s/ci/smoke-test-pod.yaml | kubectl apply -f -
+          phase=""
+          for _ in $(seq 1 60); do
+            phase=$(kubectl -n "$NAMESPACE" get pod smoke-test -o jsonpath='{.status.phase}')
+            if [ "$phase" = "Succeeded" ] || [ "$phase" = "Failed" ]; then break; fi
+            sleep 3
+          done
+          kubectl -n "$NAMESPACE" logs smoke-test | tee "$RUNNER_TEMP/smoke-test.log"
+          echo "DEPLOY_END=$(date +%s)" >> "$GITHUB_ENV"
+          [ "$phase" = "Succeeded" ]
+
+      # Evidencia de observabilidad: Prometheus tiene targets UP de la API (máx. 2 min: el scrape es cada 30 s).
+      # La consulta va por el proxy del API server (kubectl get --raw, autenticado con el kubeconfig): sin
+      # port-forward ni curl, y la respuesta es un JSON que solo se parsea con jq (nunca se pasa a un intérprete).
+      - name: Verificar que Prometheus lee las métricas de la API
+        run: |
+          set -uo pipefail
+          # sum(up{job="charmeetchic-api"}) codificado para la URL.
+          QUERY_PATH='/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/query?query=sum(up%7Bjob%3D%22charmeetchic-api%22%7D)'
+          RESP="$RUNNER_TEMP/prometheus-up.json"
+          up=0
+          for _ in $(seq 1 24); do
+            if kubectl get --raw "$QUERY_PATH" > "$RESP" 2>/dev/null; then
+              up=$(jq -r '(.data.result[0].value[1] // "0") | tonumber | floor' "$RESP" 2>/dev/null || echo 0)
+            fi
+            [ "${up:-0}" -ge 1 ] && break
+            sleep 5
+          done
+          echo "TARGETS_UP=${up}" >> "$GITHUB_ENV"
+          echo "Réplicas de la API con up == 1 en Prometheus: ${up}"
+          [ "${up:-0}" -ge 1 ]
+
+      - name: Publicar métricas del despliegue en el Pushgateway
+        run: |
+          set -euo pipefail
+          export DEPLOY_DURATION=$(( DEPLOY_END - DEPLOY_START ))
+          export DEPLOY_TIMESTAMP="$DEPLOY_END"
+          export COMMIT="$GITHUB_SHA" RUN_ID="$GITHUB_RUN_ID"
+          export IMAGE="${IMAGE}:${SHA_TAG}"
+          echo "DEPLOY_DURATION=${DEPLOY_DURATION}" >> "$GITHUB_ENV"
+          scripts/ci/push-deploy-metrics.sh
+
+      - name: Diagnóstico del despliegue (solo si falló)
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get pods -o wide || true
+          kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp || true
+          kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/name=charmeetchic-api -c api --tail=200 --prefix || true
+          kubectl -n monitoring get pods -o wide || true
+          kubectl -n monitoring get events --sort-by=.lastTimestamp | tail -30 || true
+
+      - name: Publicar resumen del despliegue
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Despliegue en AKS - ${ENVIRONMENT} (${JOB_STATUS})"
+            echo
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Entorno | \`${ENVIRONMENT}\` (overlay \`k8s/overlays/${OVERLAY}\`, Azure Kubernetes Service) |"
+            echo "| Commit | [\`${GITHUB_SHA}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) |"
+            echo "| Imagen | \`${IMAGE}:${SHA_TAG}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Versión de la aplicación | \`${APP_VERSION:-?}\` |"
+            echo "| Duración del despliegue | ${DEPLOY_DURATION:-?} s (apply → rollout → smoke test) |"
+            echo "| Cobertura de líneas / ramas | ${COVERAGE_LINES:-?} % / ${COVERAGE_BRANCHES:-?} % |"
+            echo "| Tests ejecutados | ${TESTS_TOTAL:-?} |"
+            echo "| Réplicas UP en Prometheus | ${TARGETS_UP:-?} |"
+            echo
+            echo "Métricas publicadas en el Pushgateway (job \`charmeetchic-pipeline\`, environment \`${ENVIRONMENT}\`):"
+            echo "\`charmeetchic_deploy_duration_seconds\`, \`charmeetchic_deploy_timestamp_seconds\`,"
+            echo "\`charmeetchic_coverage_lines_percent\`, \`charmeetchic_coverage_branches_percent\`,"
+            echo "\`charmeetchic_tests_total\` y \`charmeetchic_deploy_info{commit}\`. Dashboard: *Charme et Chic - API y pipeline*."
+            echo
+            echo "### Pods"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" get pods -o wide 2>&1 || true
+            echo '```'
+            echo
+            echo "### kubectl rollout history"
+            echo
+            echo '```'
+            kubectl -n "$NAMESPACE" rollout history deployment/charmeetchic-api 2>&1 | tail -6 || true
+            echo '```'
+            echo
+            echo "### Smoke test"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/smoke-test.log" 2>/dev/null || echo "El smoke test no llegó a ejecutarse."
+            echo '```'
+            echo
+            echo "### Stack de monitoreo (helm list -n monitoring)"
+            echo
+            echo '```'
+            helm list -n monitoring 2>&1 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

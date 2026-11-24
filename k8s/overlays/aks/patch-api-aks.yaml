@@ -1,0 +1,21 @@
+# API en AKS: 2 réplicas con requests chicos. El límite de CPU se mantiene en 1 núcleo para que Spring Boot
+# arranque rápido (usa CPU ociosa del nodo, sin reservarla).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: charmeetchic-api
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: api
+          resources:
+            requests:
+              # 100m garantizados por réplica: tráfico de demo. El HPA escala al 70 % de este valor.
+              cpu: 100m
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              # request = limit en memoria (igual que base): MaxRAMPercentage=70 -> heap ~537Mi.
+              memory: 768Mi
