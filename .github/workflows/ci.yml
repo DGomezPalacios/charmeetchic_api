@@ -1128,19 +1128,22 @@ jobs:
           [ "$phase" = "Succeeded" ]
 
       # Evidencia de observabilidad: Prometheus tiene targets UP de la API (máx. 2 min: el scrape es cada 30 s).
+      # La consulta va por el proxy del API server (kubectl get --raw, autenticado con el kubeconfig): sin
+      # port-forward ni curl, y la respuesta es un JSON que solo se parsea con jq (nunca se pasa a un intérprete).
       - name: Verificar que Prometheus lee las métricas de la API
         run: |
           set -uo pipefail
-          kubectl -n monitoring port-forward svc/kps-prometheus 19090:9090 >/dev/null 2>&1 &
-          PF=$!
+          # sum(up{job="charmeetchic-api"}) codificado para la URL.
+          QUERY_PATH='/api/v1/namespaces/monitoring/services/kps-prometheus:9090/proxy/api/v1/query?query=sum(up%7Bjob%3D%22charmeetchic-api%22%7D)'
+          RESP="$RUNNER_TEMP/prometheus-up.json"
           up=0
           for _ in $(seq 1 24); do
-            up=$(curl -s "http://127.0.0.1:19090/api/v1/query" --data-urlencode 'query=sum(up{job="charmeetchic-api"})' \
-              | python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(int(float(r[0]["value"][1])) if r else 0)' 2>/dev/null || echo 0)
+            if kubectl get --raw "$QUERY_PATH" > "$RESP" 2>/dev/null; then
+              up=$(jq -r '(.data.result[0].value[1] // "0") | tonumber | floor' "$RESP" 2>/dev/null || echo 0)
+            fi
             [ "${up:-0}" -ge 1 ] && break
             sleep 5
           done
-          kill "$PF" 2>/dev/null || true
           echo "TARGETS_UP=${up}" >> "$GITHUB_ENV"
           echo "Réplicas de la API con up == 1 en Prometheus: ${up}"
           [ "${up:-0}" -ge 1 ]
