@@ -94,7 +94,7 @@ jobs:
     steps:
       # Descarga el código del repositorio en el runner
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Instala el JDK 17 (Temurin) y habilita el cache de dependencias Maven
       - name: Configurar JDK 17
@@ -259,7 +259,7 @@ jobs:
       # Historial completo: SonarCloud usa git blame para atribuir cada problema a su commit y
       # distinguir el "código nuevo" del existente.
       - name: Checkout del código (historial completo)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -305,7 +305,7 @@ jobs:
     steps:
       # Descarga el código (el Dockerfile compila desde pom.xml y src/)
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Actions de terceros fijadas por el SHA completo del commit, no por tag: un tag se puede mover a otro
       # commit (si el repositorio de la action se ve comprometido), un SHA no. El comentario indica la versión
@@ -464,7 +464,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Binarios oficiales de las releases de GitHub, sin actions de terceros. Cada descarga se verifica
       # contra su SHA-256 publicado (checksums.txt / CHECKSUMS de la release): si el archivo fue alterado,
@@ -546,7 +546,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Instalar conftest, kustomize y helm (versión fija + checksum)
         run: |
@@ -623,7 +623,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # GHCR exige el nombre en minúsculas (el dueño del repositorio tiene mayúsculas). sha-<7 caracteres>
       # coincide con el tag que genera metadata-action (type=sha, format=short).
@@ -759,7 +759,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Solo HTTPS con TLS 1.2+, incluso tras redirecciones (--proto '=https' --tlsv1.2), y SHA-256 de cada archivo.
       - name: Instalar kind, kubectl y kustomize (versión fija + checksum)
@@ -989,7 +989,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Instalar kubectl, kustomize y helm (versión fija + checksum)
         run: |
@@ -1229,7 +1229,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar JDK 17
         uses: actions/setup-java@v6
@@ -1264,7 +1264,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar JDK 17
         uses: actions/setup-java@v6
@@ -1299,7 +1299,7 @@ jobs:
 
     steps:
       - name: Checkout del código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar JDK 17
         uses: actions/setup-java@v6
