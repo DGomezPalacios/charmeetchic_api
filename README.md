@@ -14,7 +14,8 @@ crecer hacia un ecommerce (carrito, checkout, pagos).
 - **Base de datos:** H2 en memoria (desarrollo y tests) · PostgreSQL (perfil `prod` en Azure/Codespaces y `k8s` en Kubernetes)
 - **Contenedores y despliegue:** Docker (imagen multi-etapa publicada en GHCR) · docker-compose de producción ·
   Kubernetes con Kustomize · kind
-- **CI/CD:** GitHub Actions · JaCoCo · SonarCloud · Trivy · Dependabot
+- **CI/CD:** GitHub Actions · JaCoCo · SonarCloud · Trivy · Dependabot · conftest (OPA/Rego) · despliegue en AKS
+- **Observabilidad:** Actuator + Micrometer · Prometheus · Grafana · Alertmanager · Loki + Grafana Alloy · Pushgateway
 - **Autenticación:** **Firebase Authentication**. La API valida los *ID tokens* de Firebase (firma RS256 con las claves
   públicas de Google, emisor, audiencia, `sub` y expiración)
 - **Autorización:** roles `ADMIN` y `USER` (custom claims de Firebase)
@@ -34,6 +35,8 @@ siguiendo GitFlow con PR obligatorios y CI/CD en GitHub Actions. El pipeline com
   evento.
 - [docs/kubernetes.md](docs/kubernetes.md): arquitectura en Kubernetes, despliegue en kind paso a paso, despliegue
   automático y justificación de los parámetros.
+- [docs/observabilidad.md](docs/observabilidad.md): métricas, logs, alertas, dashboard, políticas de cumplimiento y
+  despliegue en AKS (Evaluación 3).
 
 ---
 
@@ -1175,6 +1178,25 @@ Para que el HPA lea la CPU hace falta metrics-server (paso 2 de
 
 ---
 
+## Observabilidad y cumplimiento (Evaluación 3)
+
+La API expone métricas para Prometheus (`/api/actuator/prometheus`, histograma de latencia HTTP y etiqueta
+`application=charmeetchic-api`) y escribe logs JSON con `traceId` en Kubernetes. En AKS corre un stack de monitoreo con
+versiones fijas (`k8s/observability/`): Prometheus, Alertmanager, Grafana con un dashboard versionado, Loki + Grafana
+Alloy para los logs y un Pushgateway donde el pipeline publica la duración de cada despliegue, la cobertura, los tests
+y el commit desplegado. Hay alertas de API caída, errores 5xx, latencia p95, memoria y reinicios.
+
+El job `compliance-audit` evalúa políticas OPA/Rego con conftest (contenedores no root, sin privilegios, raíz de solo
+lectura, `drop ALL`, recursos, probes, imágenes sin `latest`, trazabilidad, permisos del workflow, `.trivyignore` y
+credenciales versionadas). Cada política está asociada a un control del CIS Kubernetes Benchmark, NIST SSDF SP 800-218,
+OWASP ASVS o ISO/IEC 27001:2022, y el job bloquea el pipeline ante cualquier incumplimiento. El job `deploy-aks`
+despliega en Azure Kubernetes Service (overlay `aks`) en cada push a `main`.
+
+Detalle completo (arquitectura, tabla métrica → decisión, políticas, gates del pipeline con evidencia de los PRs #14 y
+#30, acceso a Grafana y Prometheus, y cómo apagar el clúster): [docs/observabilidad.md](docs/observabilidad.md).
+
+---
+
 ## Justificación del modelo de ramificación
 
 Cuando integré las dos ramas feature dentro de `develop`, la rama `main` no sufrió ningún cambio. En una tienda real como Charme et Chic esto es fundamental: `main` representa lo que los clientes están usando para comprar en tiempo real, por lo que no podemos arriesgar la estabilidad de la producción mientras desarrollamos el carrito o la pasarela de pagos. Aunque existen alternativas como GitHub Flow, este modelo envía cada integración directamente a `main`, careciendo de una capa de aislamiento como `develop` para acumular funcionalidades grandes antes de lanzarlas. Por otro lado, Trunk-Based Development exige una alta madurez técnica y el uso intensivo de feature flags (conmutadores de código) para ocultar cambios incompletos en producción, algo inviable sin un equipo dedicado. En nuestro contexto colaborativo en la nube, la combinación de GitHub y GitHub Actions es el eje del flujo: GitHub centraliza el código y gestiona los Pull Requests con reglas de protección, mientras que Actions ejecuta automáticamente el workflow con los steps de `mvn -B verify` (que compila, ejecuta la suite de pruebas unitarias e integración —incluidas `FirebaseAuthIntegrationTest` y `ApiIntegrationTest` con H2— y empaqueta el JAR) seguido del smoke test al endpoint `/api/health` antes de autorizar la fusión.
@@ -1266,6 +1288,60 @@ En el desarrollo de esta segunda evaluación se utilizaron herramientas de intel
   - Trabajo y decisiones propias: Evalué cada hallazgo y tomé todas las decisiones arquitectónicas y de gobernanza: elegí SonarCloud en lugar de Snyk para el análisis estático y Kubernetes (kind) en lugar de Docker Compose para la orquestación; definí y aprobé los umbrales de cobertura; redacté personalmente las dos justificaciones técnicas y fechas de expiración en .trivyignore, decidiendo aceptar esos riesgos acotados en vez de forzar una migración mayor riesgosa; analicé y cerré los Pull Requests de Dependabot de versiones mayores documentando su motivo; realicé las revisiones de código y ejecuté íntegramente el flujo de ramas, PRs y releases.
 - **Validación de resultados:** Todo el código, pruebas, configuraciones de CI/CD y manifiestos generados con asistencia de IA fueron verificados mediante la revisión de los git diff, la inspección de los checks y logs de GitHub Actions, el cumplimiento del Quality Gate en SonarCloud, los reportes de escaneo de Trivy y las pruebas funcionales y de carga ejecutadas en el clúster local de kind.
 - **Trazabilidad en el historial:** Siguiendo buenas prácticas de transparencia y auditoría, los commits en los que participó la IA fueron identificados explícitamente en el historial de Git mediante la etiqueta Co-Authored-By (registrando a Claude Sonnet 5 y Claude Opus 5.5 según correspondiera), mientras que los commits asociados a .trivyignore se realizaron sin atribución de IA, dado que las justificaciones y decisiones de aceptación de riesgo son de autoría exclusivamente propia.
+
+### Referencias (formato Bibliotecas Duoc UC / APA 7.ª edición)
+
+- Anthropic. (2026). *Claude* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://claude.ai
+- Anthropic. (2026). *Claude Code* (versión consultada en noviembre de 2026) [Herramienta de asistencia de programación con IA]. https://claude.com/claude-code
+- Google. (2026). *Gemini* (versión consultada en noviembre de 2026) [Modelo de lenguaje de gran tamaño]. https://gemini.google.com
+---
+
+## Conclusiones (Evaluación 3)
+
+Ya en el término de esta tercera etapa de evolución del repositorio charmeetchic-api, se cumple integralmente con los requerimientos técnicos, operativos y de gobernanza de la evaluación, consolidando un ciclo de entrega continua seguro, observable y desplegado en la nube:
+
+- **Monitoreo y observabilidad integral:** Implementé métricas y logs con Spring Boot Actuator y Micrometer, desplegando un stack completo compuesto por kube-prometheus-stack 93.9, Loki 7.7.0 en modo monolítico, Grafana Alloy 1.16.0 para la recolección de logs y Pushgateway 3.11.2 para capturar métricas efímeras del pipeline de CI/CD.
+- **Kubernetes en la nube (Azure AKS):** Luego de mucho luchar con el tema de las cuotas de Azure Students, desplegué el clúster en Azure Kubernetes Service (brazilsouth, Kubernetes 1.36.5, plan Free, 1 nodo Standard_D2s_v4) con Azure CNI en modo overlay y Azure Network Policy Manager activo, comprobando el aislamiento efectivo del tráfico entre pods mediante NetworkPolicy.
+- **Dashboard operativo:** Configuré tableros en Grafana que integran en una misma vista el uso de CPU y memoria, los errores HTTP registrados, la duración de cada despliegue, la cobertura de pruebas (junto con el total de tests ejecutados y el commit desplegado, publicados desde el pipeline vía Pushgateway) y los logs centralizados en Loki.
+- **Cumplimiento normativo como código (Compliance-as-Code):** Automaticé la auditoría de seguridad y gobernanza mediante políticas Rego evaluadas con conftest y un job dedicado (`compliance-audit`), ejecutando 2.210 comprobaciones alineadas con controles de CIS Kubernetes Benchmark, NIST SSDF, OWASP ASVS e ISO/IEC 27001:2022.
+- **Documentación y pipeline con barreras de calidad:** la arquitectura quedó consolidada en `docs/observabilidad.md` y en la matriz de cumplimiento, respaldada por un pipeline que detiene automáticamente cualquier entrega no conforme mediante múltiples gates: pruebas unitarias y de integración, umbrales de cobertura (93 % de líneas y 82 % de ramas), Quality Gate de SonarCloud, escaneo de imágenes con Trivy, validación de manifiestos y CRDs (`k8s-validate` y conftest), validación de flujo de ramas (`gitflow-guard`), smoke tests y aprobación manual obligatoria en el entorno production.
+
+La incorporación de observabilidad cambia la operación del sistema porque permite tomar decisiones técnicas basadas en evidencia en tiempo real que antes era invisible, como dimensionar límites de memoria y ajustar el Horizontal Pod Autoscaler; detectar degradaciones o fallos silenciosos tras un despliegue observando la tasa de errores y la disponibilidad de targets; y auditar el rendimiento del propio ciclo de entrega midiendo la duración de cada deploy a través de Pushgateway.
+
+La capacidad del pipeline para proteger el entorno productivo quedó demostrada en casos concretos:
+
+1. **Bloqueos reales en Pull Requests:** En etapas previas del repositorio, Trivy detuvo el PR #14 al detectar 10 vulnerabilidades CRITICAL en las librerías Java de Spring Boot 3.2, y SonarCloud bloqueó el PR #30 por 5 issues de seguridad en el flujo de CI/CD, impidiendo que código o configuraciones vulnerables llegaran a las ramas principales.
+2. **Validación preventiva de políticas Rego (conftest):** En una ejecución controlada contra un manifiesto inseguro, conftest rechazó el despliegue con código de salida 1 al detectar incumplimientos de las reglas K8S-02 (contenedor con `privileged: true`, control CIS 5.2.2) y K8S-06 (ausencia de `resources.limits.cpu` y `resources.limits.memory`, control ISO/IEC 27001:2022 A.8.6), además de incorporar validación de CRDs tras detectar un ServiceMonitor mal formado en kind.
+3. **Detección real mediante alertas en AKS:** Al desplegar en AKS una imagen anterior (`sha-2503c68`, de main) que aún no exponía `/api/actuator/prometheus`, Spring Security respondió 401, dejando los targets en estado DOWN y disparando automáticamente las alertas `CharmeetchicApiSinReplicas` (firing) y `TargetDown` (pending), comprobando en vivo que el sistema de monitoreo detecta anomalías reales sin intervención manual.
+
+Eso sí, proyectando la plataforma hacia un entorno productivo, incorporaría tres mejoras prioritarias:
+
+1. **Trazabilidad distribuida:** Instrumentar OpenTelemetry para correlacionar peticiones extremo a extremo entre microservicios, colas de mensajería y bases de datos.
+2. **Autenticación federada sin secretos estáticos:** Reemplazar el secreto kubeconfig en GitHub Actions por OpenID Connect (OIDC) entre GitHub y Microsoft Entra ID.
+3. **Exposición segura de Grafana:** Habilitar un Ingress Controller con TLS automatizado y autenticación federada (OAuth2 / Entra ID) para consultar los tableros sin depender de `kubectl port-forward`.
+
+## Reflexión personal (Evaluación 3)
+
+Previo a desarrollar esta evaluación y la de Gestión de proyectos asociaba "monitorear" únicamente con revisar logs manualmente (en mi experiencia con CloudWatch) cuando algo fallaba o se comportaba de manera extraña, mirar gráficos básicos de CPU. Hoy comprendo la observabilidad como un sistema integrado de tres pilares que se complementan: las métricas que muestran qué está pasando y permiten detectar tendencias o desviaciones cuantitativas; los logs que explican el por qué ocurrió un evento en el código; y las alertas convierten esos datos en señales accionables oportunas antes de que el usuario final vea una caída.
+
+Lo que más me costó fue resolver las restricciones de infraestructura y red en Azure. Al crear el clúster AKS manualmente se me hizo imposible hacer el match de zona y cuota, cuando lo intenté resolver con IA mediante la consola de Azure me encontré con dos políticas de regiones superpuestas (la de mi suscripción y la directiva "Ubicaciones permitidas" de Duoc UC), lo que redujo las opciones válidas y me obligó a cruzar esa disponibilidad con las cuotas de máquinas virtuales hasta dar con brazilsouth y el tamaño Standard_D2s_v4. Asimismo, resultó complejo diagnosticar por qué las NetworkPolicy no bloqueaban el tráfico inicialmente, hasta advertir que el clúster se había provisionado con `networkPolicy: none` y que era necesario habilitar Azure Network Policy Manager (`--network-policy azure`) sobre Azure CNI overlay para hacer efectivo el aislamiento.
+
+Me sorprendí cuando el entorno de orquestación reveló supuestos ocultos en el código. El caso más claro fue el error 503 en `/actuator/health`: la API conservaba la dependencia `spring-boot-starter-amqp` de un trabajo previo con RabbitMQ, pero en mi computador nunca fallaba porque tenía un contenedor local de RabbitMQ escuchando en el puerto 5672; al desplegar en Kubernetes sin broker, el health indicator automático marcó la aplicación como DOWN, obligando a vincularlo al interruptor `app.messaging.enabled`. También me sorprendió ver dispararse las alertas reales en AKS por el desfase de versión de imagen, confirmando que las reglas diseñadas funcionan en escenarios no planificados.
+
+Al desarrollar esta evaluación dejé de percibir estándares como CIS, NIST SSDF o ISO 27001 como documentos burocráticos que se firman al cierre de un proyecto, para entenderlos como controles técnicos verificables que se ejecutan automáticamente en cada commit. Finalmente, lograr el despliegue funcional en Azure AKS me dejó un aprendizaje clave: la infraestructura en la nube exige leer con rigor las políticas de gobernanza de la cuenta, verificar cuotas reales antes de provisionar y abordar los errores de red y permisos con método en lugar de recurrir a alternativas aleatorias sin mayor información o conocimiento.
+
+## Declaración de uso de IA (Evaluación 3)
+
+En el desarrollo de esta tercera evaluación se utilizaron herramientas de inteligencia artificial generativa como apoyo técnico y metodológico, manteniendo en todo momento la supervisión, validación y toma de decisiones sobre el repositorio, la infraestructura en Azure, los flujos de CI/CD y el informe:
+
+- **Herramientas utilizadas:**
+  - Claude (modelo Opus 5.5) (como guía conceptual, análisis arquitectónico, diagnóstico de incidentes en Kubernetes y Azure, y revisión crítica de Pull Requests) y Claude Code (como asistente de programación en entorno local para la implementación de Actuator, el despliegue del stack de observabilidad, la configuración de tableros, políticas Rego, jobs de CI/CD y documentación técnica).
+  - Gemini (como apoyo en la revisión de redacción, coherencia estructural y contraste técnico de las conclusiones y reflexión personal frente a los criterios de la evaluación, aportando observaciones que fueron revisadas y ajustadas por mí).
+- **Distribución de tareas (IA vs. autoría propia):**
+  - Apoyo de la IA: Claude Code generó la configuración de Spring Boot Actuator, los manifiestos del stack de observabilidad (kube-prometheus-stack, Loki, Grafana Alloy y Pushgateway), el dashboard de Grafana, las políticas Rego de cumplimiento, los jobs `compliance-audit` y `deploy-aks` en GitHub Actions, la validación de CRDs en `k8s-validate` y la documentación técnica (`docs/observabilidad.md` y documentación de cumplimiento). Por su parte, Claude apoyó en el diagnóstico de hallazgos clave: la intersección de las dos políticas de regiones en Azure, la identificación del tamaño de VM compatible, la ausencia del motor de red para las NetworkPolicy, la causa del error 503 por el health indicator de RabbitMQ y el error de estructura en el ServiceMonitor.
+  - Trabajo y decisiones propias: Tomé todas las decisiones arquitectónicas, operativas y de gobernanza: decidí reintentar el despliegue real en Azure AKS en lugar de quedarme con una alternativa simulada; provisioné personalmente el clúster en Azure; elegí la región brazilsouth y el tamaño Standard_D2s_v4 tras analizar las restricciones y cuotas de mi cuenta; gestioné los accesos y secrets en GitHub; descarté publicar manualmente la imagen para preservar la trazabilidad del pipeline automatizado; realicé las revisiones de código y ejecuté íntegramente los merges, releases y aprobaciones manuales de despliegue hacia production.
+- **Validación de resultados:** Todos los manifiestos, políticas Rego, workflows y configuraciones generados con asistencia de IA fueron verificados mediante pruebas locales en kind, despliegues reales en Azure AKS, ejecución de pruebas de conectividad para validar las NetworkPolicy, inspección de los checks de GitHub Actions y la auditoría de cumplimiento (conftest), y revisión directa de métricas, alertas y logs en Prometheus y Grafana.
+- **Trazabilidad en el historial:** Siguiendo buenas prácticas de transparencia y auditoría, los 11 commits de esta etapa en los que participó la IA fueron identificados explícitamente en el historial de Git mediante la etiqueta Co-Authored-By: Claude Opus 5.5, mientras que el commit correspondiente a las secciones de conclusiones, reflexión personal y declaración de uso de IA se registra sin atribución de IA al ser de elaboración propia.
 
 ### Referencias (formato Bibliotecas Duoc UC / APA 7.ª edición)
 

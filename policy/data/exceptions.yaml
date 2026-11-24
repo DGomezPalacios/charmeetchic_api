@@ -1,0 +1,52 @@
+# -----------------------------------------------------------------------------
+# Excepciones a las políticas de policy/kubernetes (riesgos aceptados), con el mismo criterio que .trivyignore:
+# cada una nombra la regla, el recurso exacto (kind + name y, si aplica, el contenedor), el control afectado,
+# la justificación y un VENCIMIENTO. Al vencer deja de aplicar y la regla vuelve a fallar el job
+# compliance-audit, lo que obliga a revisarla. La regla REPO-03 (policy/repo) valida que todas tengan sus campos.
+#
+# Solo hay excepciones para componentes de TERCEROS del stack de monitoreo; los manifiestos propios
+# (k8s/base, overlays, k8s/ci, k8s/observability) cumplen todas las reglas sin excepciones.
+# -----------------------------------------------------------------------------
+exceptions:
+  - id: EXC-01
+    rule: K8S-09
+    kind: DaemonSet
+    name: kps-prometheus-node-exporter
+    control: CIS Kubernetes Benchmark 5.2.3-5.2.4
+    justification: >-
+      node-exporter mide CPU, memoria, disco y red DEL NODO: necesita hostNetwork y hostPID para ver las
+      interfaces y procesos del host. Mitigación: corre como no root (65534), sin escalada de privilegios,
+      raíz de solo lectura y sin capabilities; solo en el namespace monitoring (Pod Security privileged
+      acotado a ese namespace).
+    expires: "2027-06-30"
+  - id: EXC-02
+    rule: K8S-07
+    kind: Deployment
+    name: kps-grafana
+    container: grafana-sc-dashboard
+    control: ISO/IEC 27001:2022 A.8.16
+    justification: >-
+      Sidecar k8s-sidecar que copia los dashboards de los ConfigMaps a Grafana. No expone endpoint de salud
+      que probar; si falla, el contenedor termina y el kubelet lo reinicia (restartPolicy Always). El
+      contenedor principal de Grafana sí tiene liveness y readiness.
+    expires: "2027-06-30"
+  - id: EXC-03
+    rule: K8S-07
+    kind: Deployment
+    name: kps-grafana
+    container: grafana-sc-datasources
+    control: ISO/IEC 27001:2022 A.8.16
+    justification: >-
+      Sidecar k8s-sidecar que provisiona los datasources (Prometheus, Alertmanager, Loki). Mismo caso que
+      EXC-02: sin endpoint de salud; el contenedor principal de Grafana sí tiene probes.
+    expires: "2027-06-30"
+  - id: EXC-04
+    rule: K8S-07
+    kind: Deployment
+    name: alloy
+    container: config-reloader
+    control: ISO/IEC 27001:2022 A.8.16
+    justification: >-
+      Sidecar prometheus-config-reloader que avisa a Alloy cuando cambia su ConfigMap. Sin endpoint de salud
+      propio; el contenedor principal (alloy) tiene liveness (/-/healthy) y readiness (/-/ready).
+    expires: "2027-06-30"

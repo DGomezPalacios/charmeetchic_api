@@ -85,6 +85,26 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- Observabilidad (Evaluación 3): Actuator expone /api/actuator/health y /api/actuator/prometheus
+             (solo esos dos, ver management.* en application.yml). Micrometer mide las peticiones HTTP, la JVM,
+             HikariCP y Tomcat, y el registro de Prometheus las publica en su formato de texto para que
+             Prometheus las lea (ServiceMonitor en k8s/observability). Versiones gestionadas por el parent. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <!-- Trazas con Micrometer Tracing (puente Brave): cada petición recibe un traceId/spanId que Spring
+             pone en el MDC del log, así los logs JSON de una misma petición se pueden correlacionar en Loki.
+             No se exporta a ningún backend de trazas (no hay Zipkin/Tempo): solo se usan los identificadores. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+
         <!-- Mensajería con RabbitMQ (Spring AMQP): RabbitTemplate, RabbitAdmin, @RabbitListener.
              La conexión al broker es perezosa: la app (y los tests) arrancan aunque RabbitMQ no esté. -->
         <dependency>

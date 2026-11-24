@@ -85,6 +85,8 @@ tipo(scope): descripción
 | `db` | Base de datos: PostgreSQL y el perfil `k8s` (`application-k8s.yml`), `data.sql`. |
 | `k8s` | Orquestación con Kubernetes: manifiestos de `k8s/` (Kustomize), el job `k8s-validate` del CI y `docs/kubernetes.md`. Se usa con `feat`, `ci` y `docs`. |
 | `deploy` | Entrega continua: publicación de la imagen en GHCR (`publish-image`), despliegue automático (`deploy`), GitHub Environments y su documentación. Se usa con `ci` y `docs`. |
+| `observability` | Observabilidad: Actuator/Micrometer y logs JSON de la API, stack de monitoreo de `k8s/observability/` (Prometheus, Grafana, Loki, Alloy, Pushgateway, alertas y dashboard), el job `deploy-aks` y `docs/observabilidad.md`. Se usa con `feat`, `fix`, `ci` y `docs`. |
+| `compliance` | Cumplimiento automatizado: políticas OPA/Rego de `policy/`, sus tests, excepciones y el job `compliance-audit`. Se usa con `feat`, `fix`, `ci` y `docs`. |
 
 ### Ejemplos reales (`git log`)
 
@@ -225,6 +227,11 @@ Reglas aplicadas a `main` y `develop` (protección de ramas en GitHub):
 - **Check requerido `build-and-test`**: el job del workflow [CI](.github/workflows/ci.yml) debe terminar en verde
   para poder mergear. `publish-image` y `deploy` **no** son checks requeridos: no corren en los PRs (solo después
   del merge, en el push a `develop` o `main`), así que exigirlos bloquearía todos los merges.
+- **Check requerido `compliance-audit`** en `main` y `develop`: la auditoría de cumplimiento (políticas OPA/Rego con
+  conftest, ver [docs/observabilidad.md](docs/observabilidad.md#políticas-de-cumplimiento)) debe terminar en verde.
+  Corre en todos los PRs y falla ante cualquier incumplimiento: un contenedor privilegiado o sin `limits`, una imagen
+  `latest`, un workflow sin `permissions`, una excepción de `.trivyignore` sin `exp:` o una credencial versionada
+  bloquean el merge. `deploy-aks` **no** es check requerido (solo corre en el push a `main`).
 - **Check requerido `gitflow-guard` solo en `main`**: bloquea los PRs hacia `main` que no vienen de `develop` ni de
   `hotfix/*` (ver [Control automático](#control-automático-gitflow-guard)). Se configura como requerido únicamente
   en la protección de `main`: en los PRs hacia `develop` el job no corre (cualquier rama de trabajo puede ir a
@@ -320,9 +327,10 @@ No se agregan pruebas triviales (getters, records, constructores) solo para subi
 
 ### Un check en rojo bloquea el merge
 
-`build-and-test` y `docker-build` son checks requeridos en la protección de `main` y `develop`. Si una prueba falla,
-la cobertura baja del umbral, el JAR no arranca o la imagen no queda `healthy`, el check queda en rojo y **GitHub no
-permite mergear el PR** hasta corregirlo con un nuevo commit en la misma rama.
+`build-and-test`, `docker-build` y `compliance-audit` son checks requeridos en la protección de `main` y `develop`.
+Si una prueba falla, la cobertura baja del umbral, el JAR no arranca, la imagen no queda `healthy` o un manifiesto
+incumple una política, el check queda en rojo y **GitHub no permite mergear el PR** hasta corregirlo con un nuevo
+commit en la misma rama.
 
 ---
 
@@ -348,6 +356,7 @@ Los PRs de Dependabot reciben el secret de Dependabot, así que también pasan p
 | Resultado | Efecto |
 |---|---|
 | Trivy encuentra una vulnerabilidad **CRITICAL con corrección disponible** | **Bloquea**: falla `docker-build`, que es check requerido. |
+| Una política de cumplimiento (conftest) no se cumple | **Bloquea**: falla `compliance-audit`, que es check requerido. Si el incumplimiento es inevitable en un componente de terceros, se documenta como excepción en `policy/data/exceptions.yaml` (regla, recurso, control, justificación y vencimiento ≤ 1 año). |
 | Trivy encuentra vulnerabilidades **HIGH** (o CRITICAL sin corrección publicada) | Solo alerta: aparecen en el log del job y en *Security → Code scanning*. Las CRITICAL sin corrección se omiten (`ignore-unfixed`) porque no hay versión a la cual actualizar. |
 | El *quality gate* de SonarCloud falla | Falla el job `sonarcloud`. **Bloquea solo si `sonarcloud` está configurado como check requerido** en la protección de `main` y `develop` (recomendado); mientras no lo esté, se ve en rojo en el PR pero no impide el merge. |
 | Dependabot detecta una dependencia vulnerable | Alerta en *Security → Dependabot alerts* y abre un PR con la corrección. No bloquea por sí mismo; el PR pasa por el mismo CI. |
@@ -399,16 +408,27 @@ charmeetchic_api/
 │   └── pull_request_template.md      Plantilla obligatoria de PR
 ├── docs/
 │   ├── kubernetes.md                 Arquitectura en Kubernetes, despliegue en kind y automático, justificación de parámetros
+│   ├── observabilidad.md             Métricas, logs, alertas, dashboard, políticas de cumplimiento, gates y AKS
 │   └── workflow.md                   Diagramas del flujo GitFlow, del pipeline CI/CD y de la trazabilidad
+├── policy/                           Políticas OPA/Rego (conftest) del job compliance-audit
+│   ├── kubernetes/ workflow/ repo/   Reglas por objetivo y sus tests (*_test.rego)
+│   ├── lib/                          Funciones comunes (pod spec, contenedores, excepciones)
+│   ├── data/exceptions.yaml          Excepciones documentadas con vencimiento
+│   ├── controles.json                Catálogo regla -> control normativo (lo usa el reporte)
+│   └── scripts/                      compliance-audit.sh (renderiza, evalúa y reporta) y repo-facts.sh
 ├── k8s/                              Manifiestos de Kubernetes (Kustomize)
 │   ├── kind-config.yaml              Clúster kind: 1 control-plane + 2 workers (Kubernetes 1.35.8); local y job deploy
 │   ├── ci/smoke-test-pod.yaml        Pod con curl del smoke test del job deploy (/api/health y /api/products)
 │   ├── base/                         Recursos comunes: Namespace, ConfigMap, Deployment, Service, HPA y PDB de la API;
 │   │                                 StatefulSet, Service headless y NetworkPolicy de PostgreSQL; Secret de EJEMPLO
+│   ├── observability/                Stack de monitoreo para AKS: values de Helm (versiones fijas en versions.env),
+│   │                                 ServiceMonitor, PrometheusRule y dashboard de Grafana (JSON)
 │   └── overlays/
 │       ├── dev/                      kind: recursos bajos, HPA 2-3, JWT local para pruebas
-│       └── prod/                     Producción: 3+ réplicas, HPA 3-10, PDB 2, más recursos y disco
+│       ├── prod/                     Producción: 3+ réplicas, HPA 3-10, PDB 2, más recursos y disco
+│       └── aks/                      AKS (1 nodo de 2 vCPU / 8 GB): prod ajustado, HPA 2-3; lo despliega deploy-aks
 ├── scripts/
+│   ├── ci/push-deploy-metrics.sh     Publica las métricas del despliegue en el Pushgateway (job deploy-aks, por port-forward)
 │   └── firebase/                     Script Node.js de alta de administradores (addAdmin.js: claim ADMIN en
 │                                     Firebase). No lo usa la API ni entra en la imagen; Dependabot (npm) lo mantiene
 ├── src/

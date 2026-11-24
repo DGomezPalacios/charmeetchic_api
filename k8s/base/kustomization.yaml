@@ -37,6 +37,11 @@ labels:
 # dispara un rolling update; con un ConfigMap de nombre fijo los pods seguirían con la configuración vieja.
 configMapGenerator:
   - name: charmeetchic-api-config
+    # Trazabilidad (política K8S-10 de policy/): el ConfigMap generado también dice a qué app pertenece.
+    options:
+      labels:
+        app.kubernetes.io/name: charmeetchic-api
+        app.kubernetes.io/component: api
     literals:
       # Activa application-k8s.yml: PostgreSQL en vez de H2, ddl-auto=update, carga idempotente de data.sql.
       - SPRING_PROFILES_ACTIVE=k8s
@@ -52,3 +57,10 @@ configMapGenerator:
       #  - ExitOnOutOfMemoryError: ante un OutOfMemoryError la JVM termina en vez de seguir en un estado
       #    inconsistente; Kubernetes reinicia el contenedor.
       - JAVA_OPTS=-XX:MaxRAMPercentage=70.0 -XX:+ExitOnOutOfMemoryError
+      # Mensajería APAGADA en Kubernetes: en el clúster (kind del CI y AKS) no hay RabbitMQ ni Kafka; esos
+      # brokers solo existen en docker-compose (Codespaces/PC y la VM de Azure). Con los interruptores en true la
+      # API intentaría conectarse a localhost:5672 / localhost:19092 en cada arranque, llenando el log de errores
+      # de conexión (ruido en Loki y falsas alertas). false = no publica, no consume y no crea colas ni tópicos;
+      # el resto de la API (catálogo, órdenes, inventario) funciona igual.
+      - MESSAGING_ENABLED=false
+      - STREAMING_ENABLED=false

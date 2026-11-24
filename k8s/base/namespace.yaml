@@ -5,6 +5,8 @@ kind: Namespace
 metadata:
   name: charmeetchic
   labels:
+    # Trazabilidad (política K8S-10 de policy/): qué es el recurso. part-of lo agrega kustomization.yaml.
+    app.kubernetes.io/name: charmeetchic
     # Pod Security Admission en nivel "restricted" (el más estricto): el API server RECHAZA cualquier pod
     # del namespace que corra como root, permita escalar privilegios, conserve capabilities o no use
     # seccomp. Así los securityContext de los manifiestos no son una sugerencia sino un requisito.
