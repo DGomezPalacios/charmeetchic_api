@@ -37,6 +37,11 @@ labels:
 # dispara un rolling update; con un ConfigMap de nombre fijo los pods seguirían con la configuración vieja.
 configMapGenerator:
   - name: charmeetchic-api-config
+    # Trazabilidad (política K8S-10 de policy/): el ConfigMap generado también dice a qué app pertenece.
+    options:
+      labels:
+        app.kubernetes.io/name: charmeetchic-api
+        app.kubernetes.io/component: api
     literals:
       # Activa application-k8s.yml: PostgreSQL en vez de H2, ddl-auto=update, carga idempotente de data.sql.
       - SPRING_PROFILES_ACTIVE=k8s
